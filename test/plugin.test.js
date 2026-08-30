@@ -3,6 +3,7 @@
 // spec: openspec/changes/initial-plugin/specs/plugin/spec.md
 // spec: openspec/changes/initial-plugin/specs/tools/spec.md
 // spec: openspec/changes/initial-plugin/specs/system-prompt/spec.md
+// spec: openspec/changes/fix-cli-tokenizer/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
 import OpenSpecPlugin, { runOpenspec, populateCache } from '../src/index.js'
@@ -227,13 +228,11 @@ describe('openspec_cli', () => {
     expect(result.exitCode).toBe(1)
   })
 
-  it('returns {error, exitCode:null} on spawn failure', async () => {
+  it('openspec not on PATH returns a structured error', async () => {
     const { plugin, client } = await makePlugin(new Error('spawn ENOENT'))
-    const result = JSON.parse(
-      await plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeContext()),
-    )
-    expect(result.error).toBeTruthy()
-    expect(result.exitCode).toBeNull()
+    await expect(
+      plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeContext()),
+    ).rejects.toThrow('spawn ENOENT')
     expect(client.logs.length).toBeGreaterThan(0)
   })
 
@@ -277,6 +276,17 @@ describe('openspec_cli', () => {
       ctx,
     )
     expect(ctx.ask).not.toHaveBeenCalled()
+  })
+
+  it('Double-quoted change name reaches openspec without quotes', async () => {
+    const { plugin, mock$ } = await makePlugin({ stdout: '', stderr: '', exitCode: 0 })
+    const ctx = makeContext()
+    await plugin.tool.openspec_cli.execute({ command: 'new change "my-feature"' }, ctx)
+    // The subprocess call should contain "my-feature" (no quotes), not '"my-feature"'
+    const newChangeCalls = mock$.calls.filter(c => c.includes('my-feature'))
+    expect(newChangeCalls.length).toBeGreaterThan(0)
+    expect(newChangeCalls[0]).not.toContain('"my-feature"')
+    expect(newChangeCalls[0]).toContain('my-feature')
   })
 
   it('refreshes cache after a successful mutation', async () => {
@@ -629,15 +639,13 @@ describe('error handling', () => {
     expect(() => plugin['experimental.chat.system.transform']({}, output)).not.toThrow()
   })
 
-  it('tool execute returns {error} rather than throwing on spawn failure', async () => {
+  it('tool execute throws on spawn failure (propagates to TUI)', async () => {
     const mock$ = createMock$(new Error('ENOENT'))
     const client = createMockClient()
     const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
-    const result = JSON.parse(
-      await plugin.tool.openspec_cli.execute({ command: 'list' }, makeContext()),
-    )
-    expect(result.error).toBeTruthy()
-    expect(result.exitCode).toBeNull()
+    await expect(
+      plugin.tool.openspec_cli.execute({ command: 'list' }, makeContext()),
+    ).rejects.toThrow('ENOENT')
   })
 
   it('does not call console.* anywhere in the plugin', async () => {

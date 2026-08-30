@@ -1,9 +1,10 @@
 // test/helpers.test.js
 // spec: openspec/changes/initial-plugin/specs/plugin/spec.md
 // spec: openspec/changes/initial-plugin/specs/tools/spec.md
+// spec: openspec/changes/fix-cli-tokenizer/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
-import { resolveCwd, isDestructive, logError } from '../src/lib/helpers.js'
+import { resolveCwd, isDestructive, logError, parseTokens } from '../src/lib/helpers.js'
 
 // ---------------------------------------------------------------------------
 // resolveCwd
@@ -80,6 +81,47 @@ describe('isDestructive', () => {
 
   it('returns false for "instructions proposal --change archive-cleanup --json"', () => {
     expect(isDestructive('instructions proposal --change archive-cleanup --json')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// parseTokens
+// Scenario: Double-quoted change name reaches openspec without quotes
+// Scenario: Single-quoted token is stripped
+// Scenario: Unquoted tokens pass through unchanged
+// ---------------------------------------------------------------------------
+
+describe('parseTokens', () => {
+  it('Unquoted tokens pass through unchanged', () => {
+    expect(parseTokens('list --json')).toEqual(['list', '--json'])
+  })
+
+  it('Double-quoted change name reaches openspec without quotes', () => {
+    expect(parseTokens('new change "my-feature"')).toEqual(['new', 'change', 'my-feature'])
+  })
+
+  it('Single-quoted token is stripped', () => {
+    expect(parseTokens("validate 'my-change'")).toEqual(['validate', 'my-change'])
+  })
+
+  it('treats a quoted string with embedded spaces as one token', () => {
+    expect(parseTokens('cmd "hello world"')).toEqual(['cmd', 'hello world'])
+  })
+
+  it('resolves backslash escapes outside quotes', () => {
+    expect(parseTokens('cmd foo\\ bar')).toEqual(['cmd', 'foo bar'])
+  })
+
+  it('returns [] for empty string', () => {
+    expect(parseTokens('')).toEqual([])
+  })
+
+  it('returns [] for whitespace-only string', () => {
+    expect(parseTokens('   ')).toEqual([])
+  })
+
+  it('handles adjacent quoted tokens without space between them', () => {
+    expect(parseTokens('"foo""bar"')).toEqual(['foobar'])
   })
 })
 
