@@ -5,9 +5,9 @@
 import { tool } from '@opencode-ai/plugin'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { resolveCwd, isDestructive, logError } from './lib/helpers.js'
+import { resolveCwd, isDestructive, logError, parseTokens } from './lib/helpers.js'
 
-export { resolveCwd, isDestructive, logError } from './lib/helpers.js'
+export { resolveCwd, isDestructive, logError, parseTokens } from './lib/helpers.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -117,7 +117,7 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
     },
     async execute(args, context) {
       const cwd = resolveCwd(args, context)
-      const tokens = args.command.trim().split(/\s+/).filter(Boolean)
+      const tokens = parseTokens(args.command)
 
       if (isDestructive(args.command)) {
         try {
@@ -141,7 +141,7 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
         return JSON.stringify(result)
       } catch (err) {
         logError(client, 'openspec_cli spawn failed', err)
-        return JSON.stringify({ error: err?.message ?? String(err), exitCode: null })
+        throw err
       }
     },
   })

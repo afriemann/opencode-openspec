@@ -4,6 +4,56 @@
 const SERVICE = 'opencode-openspec'
 
 /**
+ * Parse a shell-like command string into an array of tokens.
+ * Handles double-quoted strings, single-quoted strings (no escaping inside),
+ * and backslash escapes outside quotes — stripping the surrounding quote
+ * characters from each token. Does NOT perform glob expansion, variable
+ * substitution, or any other shell feature; it is only a tokeniser for
+ * passing pre-formed arguments to execve-style APIs.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+export function parseTokens(command) {
+  const tokens = []
+  let current = ''
+  let i = 0
+  while (i < command.length) {
+    const ch = command[i]
+    if (ch === '"') {
+      i++
+      while (i < command.length && command[i] !== '"') {
+        if (command[i] === '\\' && i + 1 < command.length) {
+          current += command[++i]
+        } else {
+          current += command[i]
+        }
+        i++
+      }
+      // skip closing "
+    } else if (ch === "'") {
+      i++
+      while (i < command.length && command[i] !== "'") {
+        current += command[i++]
+      }
+      // skip closing '
+    } else if (ch === '\\') {
+      if (i + 1 < command.length) current += command[++i]
+    } else if (/\s/.test(ch)) {
+      if (current.length > 0) {
+        tokens.push(current)
+        current = ''
+      }
+    } else {
+      current += ch
+    }
+    i++
+  }
+  if (current.length > 0) tokens.push(current)
+  return tokens
+}
+
+/**
  * Resolve the working directory for a tool call.
  * Priority: args.cwd (if non-empty) → context.worktree → context.directory
  *
@@ -26,7 +76,7 @@ export function resolveCwd(args, context) {
  * @returns {boolean}
  */
 export function isDestructive(command) {
-  const tokens = command.trim().split(/\s+/).filter(Boolean)
+  const tokens = parseTokens(command)
   if (!tokens.length) return false
   if (tokens[0] === 'archive') return true
   if (tokens[0] === 'new' && tokens[1] === 'change') return true
