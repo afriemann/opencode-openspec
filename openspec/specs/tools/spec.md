@@ -12,15 +12,15 @@ use without further parsing.
 ### Requirement: openspec_cli runs any openspec subcommand
 
 The `openspec_cli` tool SHALL accept a `command` string (containing the full subcommand and
-flags, e.g. `"list --json"` or `"validate my-change --strict"`) and an optional `cwd` string.
-It SHALL invoke `openspec <command>` in the resolved working directory and return a JSON object
-with `stdout`, `stderr`, and `exitCode`. A non-zero exit code from the CLI SHALL be returned
-as a normal result — it is not an error — so the agent can inspect and act on it.
+flags, e.g. `"list --json"` or `"validate my-change --strict"`) and an optional `workdir`
+string. It SHALL invoke `openspec <command>` in the resolved working directory and return a
+JSON object with `stdout`, `stderr`, and `exitCode`. A non-zero exit code from the CLI SHALL be
+returned as a normal result — it is not an error — so the agent can inspect and act on it.
 
 #### Scenario: Read-only command returns stdout and exit code
 
 - **WHEN** the agent calls `openspec_cli` with `command: "list --json"`
-- **THEN** the tool runs `openspec list --json` in the resolved cwd
+- **THEN** the tool runs `openspec list --json` in the resolved working directory
 - **AND** returns `{ stdout: "<json string>", stderr: "", exitCode: 0 }`
 
 #### Scenario: Non-zero exit from CLI is a normal return
@@ -77,9 +77,9 @@ LLM calls reflect the updated list of changes.
 
 ### Requirement: openspec_status returns structured artifact status in canonical order
 
-The `openspec_status` tool SHALL accept a `change` name and an optional `cwd` string. It SHALL
-return a JSON object containing `isPlanningComplete` (boolean), an `order` array listing each
-artifact in the canonical authoring order (proposal → design → specs → tasks) with its
+The `openspec_status` tool SHALL accept a `change` name and an optional `workdir` string. It
+SHALL return a JSON object containing `isPlanningComplete` (boolean), an `order` array listing
+each artifact in the canonical authoring order (proposal → design → specs → tasks) with its
 individual status, and a `raw` field containing the full unmodified CLI response. The legacy
 `isComplete` field SHALL NOT be surfaced as a headline result.
 
@@ -98,7 +98,7 @@ individual status, and a `raw` field containing the full unmodified CLI response
 ### Requirement: openspec_instructions returns template, instruction, and output path
 
 The `openspec_instructions` tool SHALL accept an `artifact` identifier (one of `"proposal"`,
-`"design"`, `"specs"`, `"tasks"`), a `change` name, and an optional `cwd` string. It SHALL
+`"design"`, `"specs"`, `"tasks"`), a `change` name, and an optional `workdir` string. It SHALL
 return a JSON object containing exactly `template` (the starter markdown), `instruction` (the
 authoring guidance), and `resolvedOutputPath` (the absolute filesystem path to write the
 artifact to), extracted from the CLI `--json` response.
@@ -113,21 +113,21 @@ artifact to), extracted from the CLI `--json` response.
 - **WHEN** `openspec_instructions` returns `resolvedOutputPath`
 - **THEN** writing the artifact content to that path produces the correct artifact file in the expected location within the change directory
 
-### Requirement: Tools resolve cwd from context when not explicitly provided
+### Requirement: Tools resolve workdir from context when not explicitly provided
 
 All three tools SHALL use the agent's session context to determine the working directory when
-`cwd` is not provided as an argument. The resolution order SHALL be: (1) `args.cwd` if
+`workdir` is not provided as an argument. The resolution order SHALL be: (1) `args.workdir` if
 provided and non-empty; (2) `context.worktree` if truthy; (3) `context.directory`. The
-resolved cwd is passed to the openspec CLI, which locates the `openspec/` root by walking up
+resolved workdir is passed to the openspec CLI, which locates the `openspec/` root by walking up
 the directory tree from that path.
 
 #### Scenario: Tool uses worktree when no explicit cwd provided
 
-- **WHEN** the agent calls `openspec_status` without a `cwd` argument
+- **WHEN** the agent calls `openspec_status` without a `workdir` argument
 - **AND** the session's `context.worktree` is a non-empty string
 - **THEN** the tool runs openspec with the worktree path as the working directory
 
 #### Scenario: Explicit cwd overrides context
 
-- **WHEN** the agent calls `openspec_status` with `cwd: "/some/path"`
+- **WHEN** the agent calls `openspec_status` with `workdir: "/some/path"`
 - **THEN** the tool runs openspec with `/some/path` as the working directory regardless of `context.worktree`
