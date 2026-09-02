@@ -21,7 +21,7 @@ openspec_cli({ command: "archive my-change --yes" }) // requires confirmation
 
 Returns `{ stdout, stderr, exitCode }`. A non-zero `exitCode` is a normal result — inspect `stderr` for details. Destructive verbs (`archive`, `new change`) require explicit user approval via opencode's permission prompt before executing. If the user denies, the tool returns `{ cancelled: true }` without running anything.
 
-An optional `cwd` argument overrides the working directory (defaults to session worktree or directory).
+An optional `workdir` argument overrides the working directory (defaults to session worktree or directory).
 
 ### `openspec_status`
 

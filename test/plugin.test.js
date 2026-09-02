@@ -447,17 +447,17 @@ describe('openspec_instructions', () => {
 })
 
 // ---------------------------------------------------------------------------
-// cwd resolution (tools)
+// workdir resolution (tools)
 // Scenario: Tool uses worktree when no explicit cwd provided
 // Scenario: Explicit cwd overrides context
 // ---------------------------------------------------------------------------
 
-describe('cwd resolution in tools', () => {
-  it('uses context.worktree when no cwd arg provided', async () => {
-    let usedCwd = null
+describe('workdir resolution in tools', () => {
+  it('uses context.worktree when no workdir arg provided', async () => {
+    let usedWorkdir = null
     const mock$ = function(strings, ...values) {
       const chain = {
-        cwd: (d) => { usedCwd = d; return chain },
+        cwd: (d) => { usedWorkdir = d; return chain },
         quiet: () => chain,
         nothrow: () => Promise.resolve({ stdout: Buffer.from('{"changes":[]}'), stderr: Buffer.from(''), exitCode: 0 }),
       }
@@ -469,14 +469,14 @@ describe('cwd resolution in tools', () => {
       { change: 'my-change' },
       makeContext({ worktree: '/tree', directory: '/dir' }),
     )
-    expect(usedCwd).toBe('/tree')
+    expect(usedWorkdir).toBe('/tree')
   })
 
-  it('uses args.cwd when explicitly provided', async () => {
-    let usedCwd = null
+  it('uses args.workdir when explicitly provided', async () => {
+    let usedWorkdir = null
     const mock$ = function(strings, ...values) {
       const chain = {
-        cwd: (d) => { usedCwd = d; return chain },
+        cwd: (d) => { usedWorkdir = d; return chain },
         quiet: () => chain,
         nothrow: () => Promise.resolve({ stdout: Buffer.from('{"changes":[]}'), stderr: Buffer.from(''), exitCode: 0 }),
       }
@@ -485,10 +485,10 @@ describe('cwd resolution in tools', () => {
     const client = createMockClient()
     const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
     await plugin.tool.openspec_status.execute(
-      { change: 'my-change', cwd: '/explicit' },
+      { change: 'my-change', workdir: '/explicit' },
       makeContext({ worktree: '/tree', directory: '/dir' }),
     )
-    expect(usedCwd).toBe('/explicit')
+    expect(usedWorkdir).toBe('/explicit')
   })
 })
 

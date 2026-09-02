@@ -5,9 +5,9 @@
 import { tool } from '@opencode-ai/plugin'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { resolveCwd, isDestructive, logError } from './lib/helpers.js'
+import { resolveWorkdir, isDestructive, logError } from './lib/helpers.js'
 
-export { resolveCwd, isDestructive, logError } from './lib/helpers.js'
+export { resolveWorkdir, isDestructive, logError } from './lib/helpers.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -110,13 +110,13 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
         .describe(
           'Full openspec subcommand and flags, e.g. "list --json" or "new change my-feature"',
         ),
-      cwd: tool.schema
+      workdir: tool.schema
         .string()
         .optional()
         .describe('Working directory for openspec; defaults to session worktree or directory'),
     },
     async execute(args, context) {
-      const cwd = resolveCwd(args, context)
+      const workdir = resolveWorkdir(args, context)
       const tokens = args.command.trim().split(/\s+/).filter(Boolean)
 
       if (isDestructive(args.command)) {
@@ -133,10 +133,10 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
       }
 
       try {
-        const result = await runOpenspec($, cwd, tokens)
+        const result = await runOpenspec($, workdir, tokens)
         // Refresh cache after a successful mutation
         if (isDestructive(args.command) && result.exitCode === 0) {
-          await populateCache(cacheByDir, $, client, cwd)
+          await populateCache(cacheByDir, $, client, workdir)
         }
         return JSON.stringify(result)
       } catch (err) {
@@ -158,12 +158,12 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
       'phase is complete before starting implementation.',
     args: {
       change: tool.schema.string().describe('The change name (e.g. "my-feature")'),
-      cwd: tool.schema.string().optional().describe('Working directory for openspec'),
+      workdir: tool.schema.string().optional().describe('Working directory for openspec'),
     },
     async execute(args, context) {
-      const cwd = resolveCwd(args, context)
+      const workdir = resolveWorkdir(args, context)
       try {
-        const result = await runOpenspec($, cwd, [
+        const result = await runOpenspec($, workdir, [
           'status',
           '--change',
           args.change,
@@ -208,12 +208,12 @@ export async function OpenSpecPlugin({ client, directory, $, existsSync: _exists
         .enum(['proposal', 'design', 'specs', 'tasks'])
         .describe('Which artifact to get instructions for'),
       change: tool.schema.string().describe('The change name'),
-      cwd: tool.schema.string().optional().describe('Working directory for openspec'),
+      workdir: tool.schema.string().optional().describe('Working directory for openspec'),
     },
     async execute(args, context) {
-      const cwd = resolveCwd(args, context)
+      const workdir = resolveWorkdir(args, context)
       try {
-        const result = await runOpenspec($, cwd, [
+        const result = await runOpenspec($, workdir, [
           'instructions',
           args.artifact,
           '--change',
