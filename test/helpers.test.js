@@ -3,37 +3,37 @@
 // spec: openspec/changes/initial-plugin/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
-import { resolveCwd, isDestructive, logError } from '../src/lib/helpers.js'
+import { resolveWorkdir, isDestructive, logError } from '../src/lib/helpers.js'
 
 // ---------------------------------------------------------------------------
-// resolveCwd
+// resolveWorkdir
 // Scenario: Tool uses worktree when no explicit cwd provided
 // Scenario: Explicit cwd overrides context
 // ---------------------------------------------------------------------------
 
-describe('resolveCwd', () => {
-  it('returns args.cwd when provided and non-empty', () => {
-    const result = resolveCwd({ cwd: '/explicit' }, { worktree: '/tree', directory: '/dir' })
+describe('resolveWorkdir', () => {
+  it('returns args.workdir when provided and non-empty', () => {
+    const result = resolveWorkdir({ workdir: '/explicit' }, { worktree: '/tree', directory: '/dir' })
     expect(result).toBe('/explicit')
   })
 
-  it('returns context.worktree when args.cwd is absent', () => {
-    const result = resolveCwd({}, { worktree: '/tree', directory: '/dir' })
+  it('returns context.worktree when args.workdir is absent', () => {
+    const result = resolveWorkdir({}, { worktree: '/tree', directory: '/dir' })
     expect(result).toBe('/tree')
   })
 
-  it('returns context.worktree when args.cwd is an empty string', () => {
-    const result = resolveCwd({ cwd: '' }, { worktree: '/tree', directory: '/dir' })
+  it('returns context.worktree when args.workdir is an empty string', () => {
+    const result = resolveWorkdir({ workdir: '' }, { worktree: '/tree', directory: '/dir' })
     expect(result).toBe('/tree')
   })
 
   it('returns context.directory when worktree is absent', () => {
-    const result = resolveCwd({}, { directory: '/dir' })
+    const result = resolveWorkdir({}, { directory: '/dir' })
     expect(result).toBe('/dir')
   })
 
   it('returns context.directory when worktree is empty string', () => {
-    const result = resolveCwd({}, { worktree: '', directory: '/dir' })
+    const result = resolveWorkdir({}, { worktree: '', directory: '/dir' })
     expect(result).toBe('/dir')
   })
 })

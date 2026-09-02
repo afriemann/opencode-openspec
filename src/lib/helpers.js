@@ -5,14 +5,14 @@ const SERVICE = 'opencode-openspec'
 
 /**
  * Resolve the working directory for a tool call.
- * Priority: args.cwd (if non-empty) → context.worktree → context.directory
+ * Priority: args.workdir (if non-empty) → context.worktree → context.directory
  *
- * @param {{ cwd?: string }} args
+ * @param {{ workdir?: string }} args
  * @param {{ worktree?: string, directory?: string }} context
  * @returns {string}
  */
-export function resolveCwd(args, context) {
-  if (args.cwd && args.cwd.length > 0) return args.cwd
+export function resolveWorkdir(args, context) {
+  if (args.workdir && args.workdir.length > 0) return args.workdir
   if (context.worktree) return context.worktree
   return context.directory
 }
