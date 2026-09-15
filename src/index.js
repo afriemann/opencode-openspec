@@ -1,13 +1,20 @@
 // src/index.js — opencode-openspec plugin
 // Wraps the OpenSpec CLI as three agent tools and injects active-change context
 // into the system prompt on every LLM call.
+//
+// This module exports ONLY `default` — no named exports. opencode-ai@dev's
+// plugin loader speculatively invokes every named export of a plugin module
+// with the same argument it passes to the real factory; a named export with
+// a positional, type-assuming parameter throws on that mismatched argument
+// and crashes the whole module's load (see docs/v2-compat-audit.md and this
+// change's proposal.md). Keep it that way — import collaborators, never
+// re-export them.
 
 import { tool } from '@opencode-ai/plugin'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { resolveWorkdir, isDestructive, logError } from './lib/helpers.js'
-
-export { resolveWorkdir, isDestructive, logError } from './lib/helpers.js'
+import { runOpenspec, populateCache } from './lib/openspec-runner.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -23,65 +30,6 @@ This project uses OpenSpec. Use these tools instead of running \`openspec\` CLI 
 - \`openspec_instructions\` — get template, authoring guidance, and output path for an artifact`
 
 // ---------------------------------------------------------------------------
-// runOpenspec — shared CLI helper
-// ---------------------------------------------------------------------------
-
-/**
- * Run `openspec <argsArray>` in cwd.
- * Returns { stdout, stderr, exitCode }. A non-zero exit is a normal result, not an error.
- * Throws on infrastructure failure (spawn error, openspec not on PATH).
- *
- * @param {Function} $ - Bun shell tagged-template-literal function
- * @param {string} cwd
- * @param {string[]} argsArray
- * @returns {Promise<{stdout:string, stderr:string, exitCode:number}>}
- */
-export async function runOpenspec($, cwd, argsArray) {
-  const proc = await $`openspec ${argsArray}`.cwd(cwd).quiet().nothrow()
-  return {
-    stdout: proc.stdout.toString(),
-    stderr: proc.stderr.toString(),
-    exitCode: proc.exitCode ?? 0,
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Cache
-// ---------------------------------------------------------------------------
-
-/**
- * Populate (or refresh) the injection cache entry for a project directory.
- * Runs `openspec list --json` and stores parsed changes.
- *
- * @param {Map<string, object>} cacheByDir
- * @param {Function} $
- * @param {object} client
- * @param {string} dir
- */
-export async function populateCache(cacheByDir, $, client, dir) {
-  try {
-    const proc = await $`openspec list --json`.cwd(dir).quiet().nothrow()
-    let changes = []
-    try {
-      const parsed = JSON.parse(proc.stdout.toString())
-      changes = (parsed.changes ?? []).map(c => ({
-        name: c.name,
-        done: c.completedTasks ?? 0,
-        total: c.totalTasks ?? 0,
-      }))
-    } catch {
-      // JSON parse failure — leave changes empty, cache still marked present
-    }
-    cacheByDir.set(dir, { present: true, changes, at: Date.now() })
-  } catch (err) {
-    logError(client, `populateCache failed for ${dir}`, err)
-    if (!cacheByDir.has(dir)) {
-      cacheByDir.set(dir, { present: true, changes: [], at: Date.now() })
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
 
@@ -89,7 +37,7 @@ export async function populateCache(cacheByDir, $, client, dir) {
  * @param {{ client: object, directory: string, $: Function }} input
  * @returns {Promise<object>} Hooks
  */
-export async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = existsSync }) {
+async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = existsSync }) {
   /** @type {Map<string, {present:boolean, changes:Array<{name:string,done:number,total:number}>, at:number}>} */
   const cacheByDir = new Map()
 
