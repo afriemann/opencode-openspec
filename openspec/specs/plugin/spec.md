@@ -10,9 +10,9 @@ process boundary to avoid disrupting the host opencode session.
 ### Requirement: Plugin is a valid ESM opencode plugin
 
 The plugin module SHALL be a valid opencode plugin: an ESM file with `"type": "module"` in
-`package.json`, exporting a plugin factory as both a named and default export.
-`@opencode-ai/plugin` SHALL be declared in `peerDependencies` only — never in `dependencies` —
-so the runtime-resolved copy provided by Bun is used.
+`package.json`, exporting a plugin factory as a default export only. The module SHALL NOT
+export anything else by name. `@opencode-ai/plugin` SHALL be declared in `peerDependencies`
+only — never in `dependencies` — so the runtime-resolved copy provided by Bun is used.
 
 #### Scenario: Factory loads and returns hooks
 
@@ -24,6 +24,12 @@ so the runtime-resolved copy provided by Bun is used.
 
 - **WHEN** the plugin is loaded in an environment where only the peer `@opencode-ai/plugin` is present
 - **THEN** the module initialises successfully with no missing-module errors
+
+#### Scenario: Module exports nothing but default
+
+- **WHEN** the plugin module is imported as an ES module namespace
+- **THEN** `Object.keys` of that namespace is exactly `['default']`
+- **AND** no internal helper, CLI-runner, or cache function is reachable as a named export
 
 ### Requirement: Plugin never throws into opencode
 

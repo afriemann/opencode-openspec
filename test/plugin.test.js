@@ -5,7 +5,8 @@
 // spec: openspec/changes/initial-plugin/specs/system-prompt/spec.md
 
 import { jest } from '@jest/globals'
-import OpenSpecPlugin, { runOpenspec, populateCache } from '../src/index.js'
+import OpenSpecPlugin from '../src/index.js'
+import { runOpenspec, populateCache } from '../src/lib/openspec-runner.js'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -99,6 +100,19 @@ const SAMPLE_INSTRUCTIONS_JSON = JSON.stringify({
   instruction: 'Write the proposal...',
   resolvedOutputPath: '/project/openspec/changes/my-change/proposal.md',
   otherField: 'should not appear in output',
+})
+
+// ---------------------------------------------------------------------------
+// Module export surface
+// spec: openspec/changes/fix-v2-loader-named-export-crash/specs/plugin/spec.md
+// Scenario: Module exports nothing but default
+// ---------------------------------------------------------------------------
+
+describe('module export surface', () => {
+  it('exports only default — no named exports reachable', async () => {
+    const mod = await import('../src/index.js')
+    expect(Object.keys(mod)).toEqual(['default'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -641,11 +655,24 @@ describe('error handling', () => {
   })
 
   it('does not call console.* anywhere in the plugin', async () => {
-    // Source-level check: no console.* in any plugin source file
-    const { readFileSync } = await import('node:fs')
-    const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8')
-    const helpers = readFileSync(new URL('../src/lib/helpers.js', import.meta.url), 'utf8')
-    const consoleUsages = (source + helpers).match(/console\.(log|warn|error|info|debug)/g)
+    // Source-level check: no console.* in any plugin source file. Walk
+    // src/**/*.js rather than hardcoding a path list — a hardcoded list is
+    // exactly what silently stopped covering src/lib/openspec-runner.js
+    // when that file was split out of index.js.
+    const { readFileSync, readdirSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const srcDir = fileURLToPath(new URL('../src', import.meta.url))
+
+    function collectJsFiles(dir) {
+      return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = `${dir}/${entry.name}`
+        if (entry.isDirectory()) return collectJsFiles(full)
+        return entry.name.endsWith('.js') ? [full] : []
+      })
+    }
+
+    const source = collectJsFiles(srcDir).map((f) => readFileSync(f, 'utf8')).join('\n')
+    const consoleUsages = source.match(/console\.(log|warn|error|info|debug)/g)
     expect(consoleUsages).toBeNull()
   })
 })
