@@ -138,3 +138,47 @@ zero `session.created` events observed anywhere in that run's log.
 (`test/adapter-conformance.test.js`) asserting both entrypoints issue identical CLI
 invocations and produce identical results, except for the one deliberate divergence
 (destructive-verb confirmation-gating).
+
+## Addendum (2026-09-17): confirmation-gating design re-confirmed; two related ideas assessed
+
+A later, independent architectural-suitability review re-examined this plugin's V2 design
+against opencode V2's real native capabilities — specifically, whether the open follow-up
+noted above (`options.permission` as a possible native replacement for the "refuse destructive
+`openspec_cli` verbs outright, redirect to bash" confirmation-gating design) had since been
+resolved.
+
+### `options.permission` re-verified: does not gate individual invocations
+
+The review's conclusion, source-verified against the real V2 source (`/tmp/opencode/v2-src`,
+tag `v2.0.6`, `packages/core/src/tool.ts`):
+
+> `options.permission` only affects wholesale tool-visibility filtering at `Tool.snapshot()`
+> time (deny-only, hides the tool from the model's catalog entirely) — it never gates a
+> specific invocation with a confirmation prompt, and `ctx.permission.rules(...)` does not
+> exist on the real plugin-facing `PermissionDomain` type at all.
+
+**Conclusion: KEEP AS-IS.** The existing confirmation-gating design (refuse destructive
+`openspec_cli` verbs outright and redirect the user to the built-in bash tool, which does
+prompt) stands unchanged. No code change to `src/core.js`, `src/plugin.v2.js`, or
+`src/plugin.v1.js` was made or is warranted. One-line technical reason: permission gating is a
+deny-only, snapshot-time tool-visibility filter, not a per-call confirmation ("ask") mechanism
+— there is no native V2 substitute for `context.ask` to swap in.
+
+This closes the open follow-up recorded above under "The confirmation-gating decision"; no
+further re-verification of `options.permission` is pending.
+
+### `ctx.storage` considered and rejected for the injection cache
+
+The same review separately assessed `ctx.storage` as a possible replacement for the in-memory
+`cacheByDir` Map used by the system-prompt injection path, and rejected it: the cache is a
+deliberately short-lived, live-filesystem probe of the current OpenSpec change state, and
+persisting it via `ctx.storage` would risk serving stale data across runs or after external
+mutation of the `openspec/` directory — a correctness regression, not an improvement. No change
+made.
+
+### `ctx.command` for a read-only status command — backlog idea only
+
+`ctx.command` was noted as a plausible, low-priority, purely additive idea: a read-only
+`/openspec-status` slash command surfacing the same information the existing `openspec_status`
+tool already provides. This is not required and has not been implemented; it is recorded here
+only as a backlog note for a possible future change.
