@@ -19,7 +19,10 @@ openspec_cli({ command: "new change my-feature" })   // requires confirmation
 openspec_cli({ command: "archive my-change --yes" }) // requires confirmation
 ```
 
-Returns `{ stdout, stderr, exitCode }`. A non-zero `exitCode` is a normal result — inspect `stderr` for details. Destructive verbs (`archive`, `new change`) require explicit user approval via opencode's permission prompt before executing. If the user denies, the tool returns `{ cancelled: true }` without running anything.
+Returns `{ stdout, stderr, exitCode }`. A non-zero `exitCode` is a normal result — inspect `stderr` for details. Destructive verbs (`archive`, `new change`) require explicit user approval before executing.
+
+- **On V1** (`@opencode-ai/plugin`): approval goes through opencode's permission prompt (`context.ask`). If the user denies, the tool returns `{ cancelled: true }` without running anything.
+- **On V2** (`@opencode/plugin`): a plugin tool's execution context has no reachable confirmation mechanism (confirmed via `Object.keys(toolContext)` against the real V2 host: `["sessionID","agent","messageID","id","progress"]` — no `ask`/`permission`/`confirm`). Destructive commands are therefore **refused outright, without spawning any subprocess**, returning `{ cancelled: true, reason: "confirmation-unavailable", hint: "..." }`. The hint directs the agent to run the command with the built-in shell/bash tool instead, which does prompt for confirmation on V2.
 
 An optional `workdir` argument overrides the working directory (defaults to session worktree or directory).
 
@@ -63,13 +66,18 @@ When opencode loads this plugin in a project that contains an `openspec/` direct
 1. A **static tools notice** naming the three tools and directing the agent to use them instead of CLI commands.
 2. A **dynamic active-changes summary** listing current changes with task-completion counts.
 
-The injection cache is populated once per session (on `session.created`) and refreshed automatically after the plugin's own mutating tool calls (`new change`, `archive`). The system-prompt transform hook performs no filesystem or subprocess I/O — it only reads the in-memory cache.
+The injection cache is populated once per session and refreshed automatically after the plugin's own mutating tool calls (`new change`, `archive`). The system-prompt transform hook performs no filesystem or subprocess I/O — it only reads the in-memory cache.
+
+- **On V1**, the cache is populated on the `session.created` event.
+- **On V2**, the cache is populated **eagerly at plugin `setup()`**, using the plugin's own load-time directory — live verification against the real V2 host (`@opencode/cli` 2.0.3) found that `session.created` does not fire for single-shot `opencode run` invocations, so waiting on it alone would leave the cache empty. A `session.created` subscription is still kept as defense-in-depth for other hosting modes.
 
 In projects without `openspec/`, the plugin is silent.
 
 ## Deployment
 
-The plugin is loaded via opencode's file auto-discovery: create a symlink from the global plugins directory to the plugin's entry point.
+### V1 (`@opencode-ai/plugin`)
+
+Loaded via opencode's file auto-discovery: create a symlink from the global plugins directory to the plugin's V1 entry point.
 
 ```bash
 # Clone the repo
@@ -79,8 +87,20 @@ git clone <repo-url> ~/git/opencode-openspec
 cd ~/git/opencode-openspec && npm install
 
 # Create the symlink
-ln -s ~/git/opencode-openspec/src/index.js \
+ln -s ~/git/opencode-openspec/src/plugin.v1.js \
       ~/.config/opencode/plugins/opencode-openspec.js
+```
+
+### V2 (`@opencode/plugin`)
+
+V2 auto-discovers plugins from a project-local `.opencode/plugins/` directory. Copy (or symlink) `src/plugin.v2.js` there, and place `src/core.js`/`src/lib/helpers.js` in a **sibling** `.opencode/lib/` directory — `.opencode/plugins/` scans and attempts to load *every* `.js` file placed directly inside it as an independent plugin candidate, so shared modules must live elsewhere.
+
+```bash
+mkdir -p .opencode/plugins .opencode/lib
+cp ~/git/opencode-openspec/src/plugin.v2.js .opencode/plugins/openspec.js
+cp ~/git/opencode-openspec/src/core.js .opencode/lib/core.js
+cp ~/git/opencode-openspec/src/lib/helpers.js .opencode/lib/helpers.js
+# adjust the two relative import paths in the copied files to match this layout
 ```
 
 Restart opencode (or open a new session) for the plugin to take effect.
@@ -89,7 +109,7 @@ Restart opencode (or open a new session) for the plugin to take effect.
 
 - Node.js ≥ 22.5 (or Bun, which opencode uses at runtime)
 - `openspec` CLI on `PATH` (`npm install -g @fission-ai/openspec`)
-- `@opencode-ai/plugin` ≥ 1.15.0 (provided by opencode's Bun runtime as a peer dep)
+- `@opencode-ai/plugin` ≥ 1.15.0 for V1 (provided by opencode's Bun runtime as a peer dep), and/or `@opencode/plugin` ≥ 2.0.0 for V2 — both are optional peer dependencies; only the one matching your host is ever imported
 
 ## Development
 

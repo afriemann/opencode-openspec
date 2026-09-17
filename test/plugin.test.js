@@ -5,8 +5,9 @@
 // spec: openspec/changes/initial-plugin/specs/system-prompt/spec.md
 
 import { jest } from '@jest/globals'
-import OpenSpecPlugin from '../src/index.js'
-import { runOpenspec, populateCache } from '../src/lib/openspec-runner.js'
+import OpenSpecPlugin from '../src/plugin.v1.js'
+import { runOpenspec, populateCache } from '../src/core.js'
+import { logError } from '../src/lib/helpers.js'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -103,23 +104,11 @@ const SAMPLE_INSTRUCTIONS_JSON = JSON.stringify({
 })
 
 // ---------------------------------------------------------------------------
-// Module export surface
-// spec: openspec/changes/fix-v2-loader-named-export-crash/specs/plugin/spec.md
-// Scenario: Module exports nothing but default
-// ---------------------------------------------------------------------------
-
-describe('module export surface', () => {
-  it('exports only default — no named exports reachable', async () => {
-    const mod = await import('../src/index.js')
-    expect(Object.keys(mod)).toEqual(['default'])
-  })
-})
-
-// ---------------------------------------------------------------------------
 // runOpenspec
 // Scenario: Read-only command returns stdout and exit code
 // Scenario: Non-zero exit from CLI is a normal return
 // ---------------------------------------------------------------------------
+
 
 describe('runOpenspec', () => {
   it('returns stdout, stderr, exitCode on success', async () => {
@@ -151,7 +140,7 @@ describe('populateCache', () => {
     const mock$ = createMock$({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, client, '/project')
+    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
     const entry = cache.get('/project')
     expect(entry.present).toBe(true)
     expect(entry.changes).toHaveLength(1)
@@ -164,7 +153,7 @@ describe('populateCache', () => {
     const mock$ = createMock$({ stdout: 'not-json', stderr: '', exitCode: 0 })
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, client, '/project')
+    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
     const entry = cache.get('/project')
     expect(entry.present).toBe(true)
     expect(entry.changes).toEqual([])
@@ -174,7 +163,7 @@ describe('populateCache', () => {
     const mock$ = createMock$(new Error('spawn failed'))
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, client, '/project')
+    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
     expect(client.logs.length).toBeGreaterThan(0)
     // Fallback entry written (present:true, empty changes)
     const entry = cache.get('/project')
@@ -658,7 +647,8 @@ describe('error handling', () => {
     // Source-level check: no console.* in any plugin source file. Walk
     // src/**/*.js rather than hardcoding a path list — a hardcoded list is
     // exactly what silently stopped covering src/lib/openspec-runner.js
-    // when that file was split out of index.js.
+    // when that file was split out of index.js, and would equally miss
+    // src/core.js/src/plugin.v2.js if hardcoded again.
     const { readFileSync, readdirSync } = await import('node:fs')
     const { fileURLToPath } = await import('node:url')
     const srcDir = fileURLToPath(new URL('../src', import.meta.url))
@@ -674,5 +664,24 @@ describe('error handling', () => {
     const source = collectJsFiles(srcDir).map((f) => readFileSync(f, 'utf8')).join('\n')
     const consoleUsages = source.match(/console\.(log|warn|error|info|debug)/g)
     expect(consoleUsages).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Module export surface
+// spec: openspec/changes/fix-v2-loader-named-export-crash/specs/plugin/spec.md
+// spec: openspec/changes/v2-plugin-migration/specs/plugin/spec.md
+// Scenario: Module exports nothing but default (applies to both entrypoints)
+// ---------------------------------------------------------------------------
+
+describe('module export surface', () => {
+  it('plugin.v1.js exports only default — no named exports reachable', async () => {
+    const mod = await import('../src/plugin.v1.js')
+    expect(Object.keys(mod)).toEqual(['default'])
+  })
+
+  it('plugin.v2.js exports only default — no named exports reachable', async () => {
+    const mod = await import('../src/plugin.v2.js')
+    expect(Object.keys(mod)).toEqual(['default'])
   })
 })

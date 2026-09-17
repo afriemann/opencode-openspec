@@ -3,40 +3,16 @@
 // spec: openspec/changes/initial-plugin/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
-import { resolveWorkdir, isDestructive, logError } from '../src/lib/helpers.js'
+import { isDestructive, logError } from '../src/lib/helpers.js'
 
-// ---------------------------------------------------------------------------
-// resolveWorkdir
-// Scenario: Tool uses worktree when no explicit cwd provided
-// Scenario: Explicit cwd overrides context
-// ---------------------------------------------------------------------------
-
-describe('resolveWorkdir', () => {
-  it('returns args.workdir when provided and non-empty', () => {
-    const result = resolveWorkdir({ workdir: '/explicit' }, { worktree: '/tree', directory: '/dir' })
-    expect(result).toBe('/explicit')
-  })
-
-  it('returns context.worktree when args.workdir is absent', () => {
-    const result = resolveWorkdir({}, { worktree: '/tree', directory: '/dir' })
-    expect(result).toBe('/tree')
-  })
-
-  it('returns context.worktree when args.workdir is an empty string', () => {
-    const result = resolveWorkdir({ workdir: '' }, { worktree: '/tree', directory: '/dir' })
-    expect(result).toBe('/tree')
-  })
-
-  it('returns context.directory when worktree is absent', () => {
-    const result = resolveWorkdir({}, { directory: '/dir' })
-    expect(result).toBe('/dir')
-  })
-
-  it('returns context.directory when worktree is empty string', () => {
-    const result = resolveWorkdir({}, { worktree: '', directory: '/dir' })
-    expect(result).toBe('/dir')
-  })
-})
+// Note: `resolveWorkdir` is no longer exported from this module. The
+// V1-shape `(args, context)` version that used to live here was dead code
+// (superseded by `core.js`'s `resolveWorkdir(args, {defaultDir, sessionID,
+// sessionDirs})`, which both adapters actually use) — a naming collision
+// with an incompatible signature and no live importer. Its precedence
+// behavior is exercised via `test/plugin.test.js` (V1, through
+// `context.worktree`/`context.directory`) and
+// `test/plugin.v2.test.js`'s "resolveWorkdir precedence" suite (V2).
 
 // ---------------------------------------------------------------------------
 // isDestructive
@@ -80,6 +56,21 @@ describe('isDestructive', () => {
 
   it('returns false for "instructions proposal --change archive-cleanup --json"', () => {
     expect(isDestructive('instructions proposal --change archive-cleanup --json')).toBe(false)
+  })
+
+  // security review finding: a leading zero-width space survives .trim() and
+  // is not matched by \s, so a naive tokenizer would miss "archive" here —
+  // confirmed reproducible before the normalizeCommand() fix.
+  it('returns true for "archive" preceded by a zero-width space (U+200B)', () => {
+    expect(isDestructive('\u200Barchive my-change --yes')).toBe(true)
+  })
+
+  it('returns true for "archive" with an embedded left-to-right mark (U+200E)', () => {
+    expect(isDestructive('archive\u200E my-change --yes')).toBe(true)
+  })
+
+  it('returns true for "new change" with a zero-width joiner between tokens is unaffected (still two tokens)', () => {
+    expect(isDestructive('new\u200B change my-feature')).toBe(true)
   })
 })
 
