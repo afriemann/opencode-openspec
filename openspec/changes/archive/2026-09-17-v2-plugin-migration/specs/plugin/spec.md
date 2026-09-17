@@ -1,11 +1,4 @@
-# plugin Specification
-
-## Purpose
-Defines the module shape, packaging contract, and safety properties of the `opencode-openspec`
-opencode plugin: how it is loaded, how its factory is structured, and how it must behave at the
-process boundary to avoid disrupting the host opencode session.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Plugin is a valid ESM opencode plugin
 
@@ -79,6 +72,8 @@ available, with service name `"opencode-openspec"`, and SHALL fall back to
 - **WHEN** the runtime's logging channel is unavailable, throws, or returns a rejected promise
 - **THEN** the plugin falls back to `process.stderr.write`
 - **AND** no `console.*` method is called
+
+## ADDED Requirements
 
 ### Requirement: Every registered capability is released on unload
 

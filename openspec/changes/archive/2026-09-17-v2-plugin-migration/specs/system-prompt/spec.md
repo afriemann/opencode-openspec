@@ -1,32 +1,4 @@
-# system-prompt Specification
-
-## Purpose
-Defines the behaviour of the plugin's system-prompt injection: how the plugin detects
-OpenSpec presence in a project, caches the active changes list, and injects a tools-available
-notice and changes summary into the LLM system prompt on every call without performing I/O in
-the injection hot path.
-
-## Requirements
-
-### Requirement: Injection cache is populated on session start
-
-When a `session.created` event fires, the plugin SHALL check whether the session's project
-directory contains an `openspec/` subdirectory. If present, it SHALL run `openspec list --json`
-in that directory and store the result in the injection cache keyed by the project directory.
-The `existsSync` check for presence SHALL be performed once per project directory and cached —
-it SHALL NOT be re-evaluated on subsequent calls or inside the transform hook.
-
-#### Scenario: Cache is populated when openspec is present
-
-- **WHEN** a `session.created` event fires for a project directory that contains `openspec/`
-- **THEN** the plugin runs `openspec list --json` in that directory
-- **AND** stores `{ present: true, changes: [...], at: <timestamp> }` in the cache keyed by the project directory
-
-#### Scenario: Cache marks absence when openspec is not present
-
-- **WHEN** a `session.created` event fires for a project directory that does NOT contain `openspec/`
-- **THEN** the plugin stores `{ present: false }` in the cache for that directory
-- **AND** does NOT attempt to run `openspec list`
+## MODIFIED Requirements
 
 ### Requirement: System-prompt transform hook is pure
 
@@ -79,18 +51,7 @@ all, the plugin SHALL inject nothing — neither the notice nor the changes list
 - **WHEN** the cache entry for the project directory has `present: false`
 - **THEN** the transform hook adds nothing to the system prompt
 
-### Requirement: Injection cache is refreshed after this plugin's own mutating tool calls
-
-When `openspec_cli` completes a mutating command (`archive` or `new change`) successfully, the
-plugin SHALL re-run `openspec list --json` for the project directory and update the cache entry.
-The cache is NOT refreshed on a timer. Changes created or archived by external processes or by
-other sessions are NOT reflected until the next `session.created` event for a new session.
-
-#### Scenario: Cache reflects new change after creation via openspec_cli
-
-- **WHEN** the agent calls `openspec_cli` with `"new change my-feature"` and the command succeeds
-- **THEN** the cached changes list for the project directory is updated to include `my-feature`
-- **AND** the next LLM call's injection includes the new change in the summary
+## ADDED Requirements
 
 ### Requirement: Injection cache is keyed by the calling session's project directory
 

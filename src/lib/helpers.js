@@ -4,17 +4,20 @@
 const SERVICE = 'opencode-openspec'
 
 /**
- * Resolve the working directory for a tool call.
- * Priority: args.workdir (if non-empty) → context.worktree → context.directory
+ * Strips zero-width and other invisible Unicode formatting characters that
+ * would otherwise survive `.trim()` and `\s`-based whitespace splitting,
+ * letting a destructive command string (e.g. a leading U+200B zero-width
+ * space) evade `isDestructive`'s leading-token check while still reaching
+ * the real `openspec` binary as the first argument. Used identically by
+ * both `isDestructive` (the check) and the tokenizer that builds the argv
+ * actually passed to the CLI (`core.js`'s `executeOpenspecCli`), so the two
+ * views of the command can never disagree.
  *
- * @param {{ workdir?: string }} args
- * @param {{ worktree?: string, directory?: string }} context
+ * @param {string} command
  * @returns {string}
  */
-export function resolveWorkdir(args, context) {
-  if (args.workdir && args.workdir.length > 0) return args.workdir
-  if (context.worktree) return context.worktree
-  return context.directory
+export function normalizeCommand(command) {
+  return command.replace(/[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/g, '')
 }
 
 /**
@@ -26,7 +29,7 @@ export function resolveWorkdir(args, context) {
  * @returns {boolean}
  */
 export function isDestructive(command) {
-  const tokens = command.trim().split(/\s+/).filter(Boolean)
+  const tokens = normalizeCommand(command).trim().split(/\s+/).filter(Boolean)
   if (!tokens.length) return false
   if (tokens[0] === 'archive') return true
   if (tokens[0] === 'new' && tokens[1] === 'change') return true
