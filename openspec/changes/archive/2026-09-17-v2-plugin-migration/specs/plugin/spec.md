@@ -73,6 +73,8 @@ available, with service name `"opencode-openspec"`, and SHALL fall back to
 - **THEN** the plugin falls back to `process.stderr.write`
 - **AND** no `console.*` method is called
 
+## ADDED Requirements
+
 ### Requirement: Every registered capability is released on unload
 
 On a runtime whose capability registration returns a disposable handle, the plugin SHALL retain
