@@ -101,7 +101,7 @@ describe('openspec_cli pipeline', () => {
   })
 
   describe('gating', () => {
-    it('Destructive verb is refused when no confirmation mechanism is available', async () => {
+    it('Destructive verb executes when no confirmation mechanism is available', async () => {
       const { exec, run } = setup({ confirm: null })
       const r = await run({ command: 'archive my-change --yes' })
       expect(exec.records[0].argv).toEqual(['archive', 'my-change', '--yes'])

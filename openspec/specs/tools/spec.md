@@ -67,7 +67,7 @@ authorisation to the host's tool permissions.
 - **THEN** no confirmation is requested
 - **AND** the command is executed immediately without a confirmation prompt, on any runtime
 
-#### Scenario: Destructive verb is refused when no confirmation mechanism is available
+#### Scenario: Destructive verb executes when no confirmation mechanism is available
 
 - **WHEN** the agent calls `openspec_cli` with `command: "archive my-change --yes"` on a runtime that exposes no confirmation mechanism reachable from a tool
 - **THEN** the subprocess is spawned and the command executes
