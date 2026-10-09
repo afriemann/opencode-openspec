@@ -11,12 +11,13 @@
 //
 // Thin adapter over src/core.js: wraps the three tools with @opencode-ai/plugin's
 // `tool()`/`tool.schema` builder, and supplies V1-shaped capabilities
-// ({$, log, confirm, defaultDir}) to core's runtime-agnostic behavior functions.
+// ({exec, log, confirm, defaultDir}) to core's runtime-agnostic behavior functions.
 
 import { tool } from '@opencode-ai/plugin'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { logError } from './lib/helpers.js'
+import { createExec } from './lib/exec.js'
 import {
   handleSessionCreated,
   composeSystemParts,
@@ -24,14 +25,16 @@ import {
   executeOpenspecStatus,
   executeOpenspecInstructions,
   TOOL_SCHEMAS,
+  MIN_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
   TOOL_DESCRIPTIONS,
 } from './core.js'
 
 /**
- * @param {{ client: object, directory: string, $: Function }} input
+ * @param {{ client: object, directory: string }} input
  * @returns {Promise<object>} Hooks
  */
-async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = existsSync }) {
+async function OpenSpecPlugin({ client, directory, existsSync: _existsSync = existsSync, exec = createExec() }) {
   /** @type {Map<string, {present:boolean, changes:Array<{name:string,done:number,total:number}>, at:number}>} */
   const cacheByDir = new Map()
 
@@ -46,11 +49,12 @@ async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = 
     args: {
       command: tool.schema.string().describe(TOOL_SCHEMAS.openspec_cli.properties.command.description),
       workdir: tool.schema.string().optional().describe(TOOL_SCHEMAS.openspec_cli.properties.workdir.description),
+      timeout: tool.schema.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS).optional().describe(TOOL_SCHEMAS.openspec_cli.properties.timeout.description),
     },
     async execute(args, context) {
       const resolveCtx = { defaultDir: context.worktree ?? context.directory }
       const caps = {
-        $,
+        exec,
         log,
         confirm: (command) =>
           context.ask({
@@ -73,7 +77,7 @@ async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = 
     },
     async execute(args, context) {
       const resolveCtx = { defaultDir: context.worktree ?? context.directory }
-      return executeOpenspecStatus(args, resolveCtx, { $, log, confirm: null, cacheByDir })
+      return executeOpenspecStatus(args, resolveCtx, { exec, log, confirm: null, cacheByDir })
     },
   })
 
@@ -88,7 +92,7 @@ async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = 
     },
     async execute(args, context) {
       const resolveCtx = { defaultDir: context.worktree ?? context.directory }
-      return executeOpenspecInstructions(args, resolveCtx, { $, log, confirm: null, cacheByDir })
+      return executeOpenspecInstructions(args, resolveCtx, { exec, log, confirm: null, cacheByDir })
     },
   })
 
@@ -100,7 +104,7 @@ async function OpenSpecPlugin({ client, directory, $, existsSync: _existsSync = 
     try {
       if (event.type !== 'session.created') return
       const dir = event.properties?.info?.directory ?? event.properties?.directory ?? directory
-      await handleSessionCreated(cacheByDir, $, log, _existsSync, dir, { join })
+      await handleSessionCreated(cacheByDir, exec, log, _existsSync, dir, { join })
     } catch (err) {
       log('error', 'event handler failed', err)
     }

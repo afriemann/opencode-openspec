@@ -48,7 +48,7 @@ V1 specifically; it is applied uniformly to both files as a defensive baseline).
 | `tool` (custom tool map, built with `tool()`/`tool.schema`) | `ctx.tool.transform((editor) => editor.add({...}))`, with plain JSON Schema `input` definitions (V2 has no schema-builder) and `options: { codemode: false }` on every tool so it stays directly callable rather than falling back to Code-Mode-only indirection |
 | `event` hook, filtered for `session.created` | `ctx.event.subscribe({signal})`, a detached async iterator stopped via an `AbortController` in the `setup()` cleanup |
 | `experimental.chat.system.transform` | `ctx.session.hook("context", (event) => { event.system.push({type:'text', text}) })` — note V2 wraps each pushed part in an object, unlike V1's bare strings |
-| `PluginInput.$` (Bun shell shortcut) | resolved once from `globalThis.Bun.$` in `setup()`; throws loudly if absent, since every capability this plugin offers depends on shelling out to `openspec` |
+| `PluginInput.$` (Bun shell shortcut) | **not used**: both adapters spawn `openspec` through `src/lib/exec.js` (`node:child_process`), because Bun's `$` has no kill API and a `Promise.race` timeout would leave the child running |
 | `context.ask` (destructive-command confirmation) | **no equivalent** — see the confirmation-gating decision below |
 | `client.app.log` | **no equivalent** (`Context.app` has no `log` method) — logs go straight to `process.stderr.write` |
 
@@ -68,29 +68,14 @@ OQ1-HASDIR: false
 ```
 
 No `ask`, `permission`, `confirm`, or `directory` field is reachable from a V2 tool's
-`execute()`. Rather than silently executing an unconfirmed destructive command, `src/core.js`'s
-`executeOpenspecCli` refuses it outright when its injected `confirm` capability is `null`
-(which `plugin.v2.js` always passes), returning:
-
-```json
-{
-  "cancelled": true,
-  "reason": "confirmation-unavailable",
-  "hint": "Destructive openspec verbs are not available through openspec_cli on this runtime (no confirmation mechanism is reachable from a plugin tool here). Run the command directly with the built-in shell/bash tool instead, which prompts for confirmation."
-}
-```
-
-Verified live end-to-end: calling `openspec_cli({command: "archive my-feature --yes"})`
-against a real change returned exactly this payload, spawned **no subprocess** (the change
-directory was confirmed still present, not moved to `archive/`), and the model correctly
-reported the refusal to the user instead of treating it as a normal completed archive.
-
-**Open follow-up (not verified this session):** whether registering a tool with
-`options.permission: "openspec"` and a matching `{action, resource, effect:"ask"}` rule
-produces a genuine V2 prompt, or only deny-filters silently. The refusal path above does not
-depend on the answer (it never touches `options.permission` at all), so this does not block
-the port, but it remains an open question for a future capability if V2 ever exposes a real
-per-tool confirmation surface.
+`execute()`. Since no per-call confirmation exists on V2, `src/core.js`'s `executeOpenspecCli` runs
+destructive verbs (`archive`, `new change`, `store remove`) when its injected `confirm`
+capability is `null` (which `plugin.v2.js` always passes). Earlier revisions refused them with
+`{cancelled: true, reason: "confirmation-unavailable"}` and redirected the agent to the bash
+tool; that refusal was removed in `full-cli-support` because it forced agents to shell out for
+the core change lifecycle. The residual risk (an agent steered by untrusted text runs a
+destructive command unprompted) is documented in the README's security note. V1 behaviour is
+unchanged: `context.ask` before spawning.
 
 ### The `session.created` correction (found during live verification)
 
@@ -125,7 +110,7 @@ zero `session.created` events observed anywhere in that run's log.
 | Plugin loads via `.opencode/plugins/` auto-discovery, shared code in sibling `.opencode/lib/` | ✅ loads cleanly; 6 sibling V1-shape plugins present in the same run correctly *failed* to load under V2's loader (`Plugin must export a default definition with an id and an effect or setup function`), confirming the V2 loader genuinely distinguishes shape |
 | `openspec_status`/`openspec_cli`/`openspec_instructions` directly callable (not Code-Mode-only) | ✅ confirmed via `⚙ openspec_status {...}` direct-call rendering, no Code-Mode fallback |
 | `Object.keys(toolContext)` matches documented shape, no ask/permission/confirm/directory | ✅ exactly `["sessionID","agent","messageID","id","progress"]` |
-| Destructive verb refused with no subprocess spawned | ✅ `archive my-feature --yes` → `{cancelled:true, reason:"confirmation-unavailable", ...}`, change directory untouched |
+| (historical, superseded by `full-cli-support`) Destructive verb refused with no subprocess spawned | ✅ `archive my-feature --yes` → `{cancelled:true, reason:"confirmation-unavailable", ...}`, change directory untouched |
 | System-prompt injection reflects active changes without `session.created` | ✅ after the eager-population fix |
 | Packaged `.opencode/lib/` layout resolves for a plain-copied (not symlinked) install | ✅ exercised across three separate scratch-project runs |
 | `options.permission` prompt-suppression semantics (F9) | ⚠️ not independently re-verified this session — see the confirmation-gating decision's open follow-up above |
@@ -136,10 +121,12 @@ zero `session.created` events observed anywhere in that run's log.
 (pre-existing V1 tests, behavior unchanged), 13 V2-specific lifecycle tests
 (`test/plugin.v2.test.js`), and 9 shared adapter-conformance tests
 (`test/adapter-conformance.test.js`) asserting both entrypoints issue identical CLI
-invocations and produce identical results, except for the one deliberate divergence
-(destructive-verb confirmation-gating).
+invocations and produce identical results, except that only V1 asks for confirmation
+before a destructive verb.
 
 ## Addendum (2026-09-17): confirmation-gating design re-confirmed; two related ideas assessed
+
+> Superseded in part by `full-cli-support`: the "refuse and redirect" design below was replaced by running destructive verbs on V2. The `options.permission` finding (deny-only, snapshot-time visibility filter) still holds.
 
 A later, independent architectural-suitability review re-examined this plugin's V2 design
 against opencode V2's real native capabilities — specifically, whether the open follow-up

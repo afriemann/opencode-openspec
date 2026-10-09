@@ -6,6 +6,7 @@
 
 import { jest } from '@jest/globals'
 import plugin from '../src/plugin.v2.js'
+import { createMockExec } from './support/mock-exec.js'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,38 +14,6 @@ import { join } from 'node:path'
 // ---------------------------------------------------------------------------
 // Fake V2 host
 // ---------------------------------------------------------------------------
-
-function createMockBunDollar(responseOrError = { stdout: '', stderr: '', exitCode: 0 }) {
-  const calls = []
-  function $(strings, ...values) {
-    const cmd = Array.isArray(strings)
-      ? strings.reduce((acc, s, i) => {
-          const v = values[i]
-          if (v == null) return acc + s
-          if (Array.isArray(v)) return acc + s + v.join(' ')
-          return acc + s + String(v)
-        }, '')
-      : String(strings)
-    calls.push(cmd.trim())
-
-    const shouldThrow = responseOrError instanceof Error
-    const result = shouldThrow
-      ? null
-      : {
-          stdout: Buffer.from(responseOrError.stdout ?? ''),
-          stderr: Buffer.from(responseOrError.stderr ?? ''),
-          exitCode: responseOrError.exitCode ?? 0,
-        }
-    const chain = {
-      cwd: () => chain,
-      quiet: () => chain,
-      nothrow: () => (shouldThrow ? Promise.reject(responseOrError) : Promise.resolve(result)),
-    }
-    return chain
-  }
-  $.calls = calls
-  return $
-}
 
 /** Builds a fake tool editor that records added descriptors and supports get()/list(). */
 function createFakeEditor() {
@@ -134,14 +103,6 @@ function createFakeCtx({ directory = '/project', eventStream, editor, toolDispos
   }
 }
 
-function withFakeBun(bunDollar, fn) {
-  const original = globalThis.Bun
-  globalThis.Bun = { $: bunDollar }
-  return fn().finally(() => {
-    globalThis.Bun = original
-  })
-}
-
 async function flushMicrotasks() {
   await new Promise((resolve) => setImmediate(resolve))
 }
@@ -158,24 +119,15 @@ function createTempProjectDir() {
 }
 
 // ---------------------------------------------------------------------------
-// setup() — Bun.$ availability
+// setup()
 // ---------------------------------------------------------------------------
 
 describe('plugin.v2 setup()', () => {
-  it('throws when globalThis.Bun.$ is not available', async () => {
-    const original = globalThis.Bun
-    // eslint-disable-next-line no-undefined
-    globalThis.Bun = undefined
-    const ctx = createFakeCtx()
-    await expect(plugin.setup(ctx)).rejects.toThrow(/Bun\.\$ is not available/)
-    globalThis.Bun = original
-  })
-
   it('registers all three tools with codemode:false', async () => {
-    const mock$ = createMockBunDollar()
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec()
+    await (async () => {
       const ctx = createFakeCtx()
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       const names = ['openspec_cli', 'openspec_status', 'openspec_instructions']
       for (const name of names) {
         const descriptor = ctx._fakeEditor.get(name)
@@ -183,12 +135,12 @@ describe('plugin.v2 setup()', () => {
         expect(descriptor.options).toEqual({ codemode: false })
       }
       await cleanup()
-    })
+    })()
   })
 
   it('throws during setup when a tool is tampered to lose codemode:false', async () => {
-    const mock$ = createMockBunDollar()
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec()
+    await (async () => {
       const editor = createFakeEditor()
       const originalAdd = editor.add.bind(editor)
       editor.add = (descriptor) => {
@@ -199,8 +151,8 @@ describe('plugin.v2 setup()', () => {
         }
       }
       const ctx = createFakeCtx({ editor })
-      await expect(plugin.setup(ctx)).rejects.toThrow(/openspec_status.*codemode:false/)
-    })
+      await expect(plugin.setup(ctx, { exec: mockExec })).rejects.toThrow(/openspec_status.*codemode:false/)
+    })()
   })
 })
 
@@ -212,18 +164,18 @@ describe('plugin.v2 setup()', () => {
 
 describe('plugin.v2 eager cache population', () => {
   it('populates the cache from ctx.location.directory during setup(), with no session.created event required', async () => {
-    const mock$ = createMockBunDollar({
+    const mockExec = createMockExec({
       stdout: JSON.stringify({ changes: [{ name: 'my-feature', completedTasks: 1, totalTasks: 3 }] }),
       stderr: '',
       exitCode: 0,
     })
     const projectDir = createTempProjectDir()
-    await withFakeBun(mock$, async () => {
+    await (async () => {
       const ctx = createFakeCtx({ directory: projectDir })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
 
       // No event pushed at all — cache must already be populated from setup().
-      expect(mock$.calls.some((c) => c.includes('list'))).toBe(true)
+      expect(mockExec.calls.some((c) => c.includes('list'))).toBe(true)
 
       const hook = ctx._getContextHook()
       const event = { sessionID: 'never-seen-session', system: [] }
@@ -233,16 +185,16 @@ describe('plugin.v2 eager cache population', () => {
       expect(joined).toContain('1/3')
 
       await cleanup()
-    })
+    })()
     rmSync(projectDir, { recursive: true, force: true })
   })
 
   it('marks the cache absent when the directory has no openspec/ folder', async () => {
-    const mock$ = createMockBunDollar()
+    const mockExec = createMockExec()
     const bareDir = mkdtempSync(join(tmpdir(), 'opencode-openspec-v2-bare-'))
-    await withFakeBun(mock$, async () => {
+    await (async () => {
       const ctx = createFakeCtx({ directory: bareDir })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
 
       const hook = ctx._getContextHook()
       const event = { sessionID: 's1', system: [] }
@@ -250,7 +202,7 @@ describe('plugin.v2 eager cache population', () => {
       expect(event.system).toEqual([])
 
       await cleanup()
-    })
+    })()
     rmSync(bareDir, { recursive: true, force: true })
   })
 })
@@ -266,22 +218,22 @@ describe('plugin.v2 per-session directory isolation', () => {
     const openspecDir = createTempProjectDir()
     const bareDir = mkdtempSync(join(tmpdir(), 'opencode-openspec-v2-bare-'))
 
-    // The mock$ responds identically regardless of cwd (it doesn't track
+    // The mockExec responds identically regardless of cwd (it doesn't track
     // per-call cwd), but handleSessionCreated checks the real filesystem
     // for an `openspec/` folder before ever calling $ — so bareDir's cache
     // entry is set to {present:false} without a spawn, and openspecDir's is
     // populated via a real `list --json` call.
-    const mock$ = createMockBunDollar({
+    const mockExec = createMockExec({
       stdout: JSON.stringify({ changes: [{ name: 'shared-feature', completedTasks: 2, totalTasks: 4 }] }),
       stderr: '',
       exitCode: 0,
     })
 
-    await withFakeBun(mock$, async () => {
+    await (async () => {
       // ctx.location.directory is the plugin's own load-time directory
       // (arbitrary here — neither session's directory needs to match it).
       const ctx = createFakeCtx({ directory: '/plugin-load-dir' })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
 
       ctx._eventStream.pushEvent({
         type: 'session.created',
@@ -307,7 +259,7 @@ describe('plugin.v2 per-session directory isolation', () => {
       expect(withoutOpenspecEvent.system).toEqual([])
 
       await cleanup()
-    })
+    })()
 
     rmSync(openspecDir, { recursive: true, force: true })
     rmSync(bareDir, { recursive: true, force: true })
@@ -320,11 +272,11 @@ describe('plugin.v2 per-session directory isolation', () => {
 
 describe('plugin.v2 event subscription', () => {
   it('a throwing raw-event handling step does not terminate the subscription loop', async () => {
-    const mock$ = createMockBunDollar({ stdout: JSON.stringify({ changes: [] }), stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: JSON.stringify({ changes: [] }), stderr: '', exitCode: 0 })
     const projectDir = createTempProjectDir()
-    await withFakeBun(mock$, async () => {
+    await (async () => {
       const ctx = createFakeCtx({ directory: projectDir })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
 
       // First event has a malformed `data` (undefined -> destructuring
       // `{ sessionID, location } = rawEvent.data` should still work since
@@ -345,22 +297,22 @@ describe('plugin.v2 event subscription', () => {
       await flushMicrotasks()
       await flushMicrotasks()
 
-      expect(mock$.calls.some((c) => c.includes('list'))).toBe(true)
+      expect(mockExec.calls.some((c) => c.includes('list'))).toBe(true)
       await cleanup()
-    })
+    })()
     rmSync(projectDir, { recursive: true, force: true })
   })
 
   it('ignores non-session.created events without spawning', async () => {
-    const mock$ = createMockBunDollar()
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec()
+    await (async () => {
       const ctx = createFakeCtx()
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       ctx._eventStream.pushEvent({ type: 'message.updated', data: {} })
       await flushMicrotasks()
-      expect(mock$.calls).toHaveLength(0)
+      expect(mockExec.calls).toHaveLength(0)
       await cleanup()
-    })
+    })()
   })
 })
 
@@ -370,26 +322,26 @@ describe('plugin.v2 event subscription', () => {
 
 describe('plugin.v2 cleanup', () => {
   it('disposes every registration and aborts the event controller', async () => {
-    const mock$ = createMockBunDollar()
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec()
+    await (async () => {
       const toolDisposeSpy = jest.fn().mockResolvedValue(undefined)
       const hookDisposeSpy = jest.fn().mockResolvedValue(undefined)
       const ctx = createFakeCtx({ toolDisposeSpy, hookDisposeSpy })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       await cleanup()
       expect(toolDisposeSpy).toHaveBeenCalledTimes(1)
       expect(hookDisposeSpy).toHaveBeenCalledTimes(1)
-    })
+    })()
   })
 
   it('a second cleanup call is a no-op (does not throw)', async () => {
-    const mock$ = createMockBunDollar()
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec()
+    await (async () => {
       const ctx = createFakeCtx()
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       await cleanup()
       await expect(cleanup()).resolves.toBeUndefined()
-    })
+    })()
   })
 })
 
@@ -399,26 +351,26 @@ describe('plugin.v2 cleanup', () => {
 
 describe('plugin.v2 resolveWorkdir precedence', () => {
   it('prefers args.workdir over the session-scoped directory and ctx.location.directory', async () => {
-    const mock$ = createMockBunDollar({ stdout: 'ok', stderr: '', exitCode: 0 })
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec({ stdout: 'ok', stderr: '', exitCode: 0 })
+    await (async () => {
       const ctx = createFakeCtx({ directory: '/default-dir' })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       ctx._eventStream.pushEvent({ type: 'session.created', data: { sessionID: 's1', location: { directory: '/session-dir' } } })
       await flushMicrotasks()
 
       const cliTool = ctx._fakeEditor.get('openspec_cli')
       await cliTool.execute({ command: 'list --json', workdir: '/explicit-dir' }, { sessionID: 's1' })
-      expect(mock$.calls.some((c) => c.startsWith('cd:'))).toBe(false) // sanity: mock doesn't track cwd via cmd string
+      expect(mockExec.calls.some((c) => c.startsWith('cd:'))).toBe(false) // sanity: mock doesn't track cwd via cmd string
 
       await cleanup()
-    })
+    })()
   })
 
   it('falls back to the session-scoped directory when args.workdir is absent', async () => {
-    const mock$ = createMockBunDollar({ stdout: 'ok', stderr: '', exitCode: 0 })
-    await withFakeBun(mock$, async () => {
+    const mockExec = createMockExec({ stdout: 'ok', stderr: '', exitCode: 0 })
+    await (async () => {
       const ctx = createFakeCtx({ directory: '/default-dir' })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       ctx._eventStream.pushEvent({ type: 'session.created', data: { sessionID: 's1', location: { directory: '/session-dir' } } })
       await flushMicrotasks()
 
@@ -427,7 +379,7 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
       expect(result.stdout).toBe('ok')
 
       await cleanup()
-    })
+    })()
   })
 })
 
@@ -436,21 +388,22 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
 // ---------------------------------------------------------------------------
 
 describe('plugin.v2 destructive verb handling', () => {
-  it('refuses a destructive command without spawning, returning confirmation-unavailable', async () => {
-    const mock$ = createMockBunDollar({ stdout: '', stderr: '', exitCode: 0 })
-    await withFakeBun(mock$, async () => {
-      const ctx = createFakeCtx()
-      const cleanup = await plugin.setup(ctx)
-      const cliTool = ctx._fakeEditor.get('openspec_cli')
-      const result = JSON.parse((await cliTool.execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })).content)
-      expect(result).toEqual({
-        cancelled: true,
-        reason: 'confirmation-unavailable',
-        hint: expect.stringContaining('built-in shell/bash tool'),
-      })
-      expect(mock$.calls).toHaveLength(0)
-      await cleanup()
-    })
+  it('executes a destructive command without a plugin-level prompt', async () => {
+    const mockExec = createMockExec({ stdout: 'archived', stderr: '', exitCode: 0 })
+    const ctx = createFakeCtx()
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    const cliTool = ctx._fakeEditor.get('openspec_cli')
+    const result = JSON.parse((await cliTool.execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })).content)
+    expect(result).toEqual({ stdout: 'archived', stderr: '', exitCode: 0 })
+    expect(mockExec.calls).toContain('openspec archive my-change --yes')
+    await cleanup()
+  })
+
+  it('exposes the timeout argument in the tool input schema', async () => {
+    const ctx = createFakeCtx()
+    const cleanup = await plugin.setup(ctx, { exec: createMockExec() })
+    expect(ctx._fakeEditor.get('openspec_cli').input.properties.timeout).toMatchObject({ type: 'integer' })
+    await cleanup()
   })
 })
 
@@ -460,15 +413,15 @@ describe('plugin.v2 destructive verb handling', () => {
 
 describe('plugin.v2 system-prompt context hook', () => {
   it('pushes {type:"text", text} wrapped parts, not bare strings', async () => {
-    const mock$ = createMockBunDollar({
+    const mockExec = createMockExec({
       stdout: JSON.stringify({ changes: [{ name: 'my-feature', completedTasks: 1, totalTasks: 4 }] }),
       stderr: '',
       exitCode: 0,
     })
     const projectDir = createTempProjectDir()
-    await withFakeBun(mock$, async () => {
+    await (async () => {
       const ctx = createFakeCtx({ directory: projectDir })
-      const cleanup = await plugin.setup(ctx)
+      const cleanup = await plugin.setup(ctx, { exec: mockExec })
       ctx._eventStream.pushEvent({ type: 'session.created', data: { sessionID: 's1', location: { directory: projectDir } } })
       await flushMicrotasks()
 
@@ -481,7 +434,7 @@ describe('plugin.v2 system-prompt context hook', () => {
         expect(part).toEqual({ type: 'text', text: expect.any(String) })
       }
       await cleanup()
-    })
+    })()
     rmSync(projectDir, { recursive: true, force: true })
   })
 })

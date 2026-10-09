@@ -15,16 +15,26 @@ Runs any `openspec` subcommand. The `command` argument is the full subcommand an
 ```
 openspec_cli({ command: "list --json" })
 openspec_cli({ command: "validate my-change --strict" })
-openspec_cli({ command: "new change my-feature" })   // requires confirmation
-openspec_cli({ command: "archive my-change --yes" }) // requires confirmation
+openspec_cli({ command: "new change my-feature" })
+openspec_cli({ command: "archive my-change --yes" })
+openspec_cli({ command: "validate --all --json", timeout: 30000 })
 ```
 
-Returns `{ stdout, stderr, exitCode }`. A non-zero `exitCode` is a normal result — inspect `stderr` for details. Destructive verbs (`archive`, `new change`) require explicit user approval before executing.
+Returns `{ stdout, stderr, exitCode }`. A non-zero `exitCode` is a normal result — inspect `stderr` for details.
 
-- **On V1** (`@opencode-ai/plugin`): approval goes through opencode's permission prompt (`context.ask`). If the user denies, the tool returns `{ cancelled: true }` without running anything.
-- **On V2** (`@opencode/plugin`): a plugin tool's execution context has no reachable confirmation mechanism (confirmed via `Object.keys(toolContext)` against the real V2 host: `["sessionID","agent","messageID","id","progress"]` — no `ask`/`permission`/`confirm`). Destructive commands are therefore **refused outright, without spawning any subprocess**, returning `{ cancelled: true, reason: "confirmation-unavailable", hint: "..." }`. The hint directs the agent to run the command with the built-in shell/bash tool instead, which does prompt for confirmation on V2.
+- **Quoting:** the command is split shell-style (single quotes, double quotes, backslash escapes). There is no expansion of `$VAR`, `~` or globs, and no pipes, redirects or `;`. A leading `openspec` is ignored.
+- **Non-interactive:** every command runs with stdin closed and no injected flags. The CLI itself refuses pickers and prompts when there is no terminal.
+- **Timeout:** optional `timeout` in ms (integer, 1000–600000, default 120000). On expiry the process group is killed and `{ stdout, stderr, exitCode: null, timedOut: true, reason: "timeout", hint }` is returned with any partial output. Check `openspec list` and `git status` after a timeout on a mutating command.
+- **Structured failures:** `{ error, reason, exitCode: null }` with `reason` one of `parse-error`, `invalid-timeout`, `spawn-failed`.
+- **Refused commands** (`{ cancelled: true, reason, error, hint }`, nothing runs; use your own terminal): `config edit` and `workset open` (`interactive`, they launch an editor), `completion install|uninstall` (edits shell rc files) and `feedback` (sends text to a third party) (`out-of-scope-side-effect`). A bare `<command> --help` is allowed.
+- **Destructive verbs** (`archive`, `new change`, `store remove|unregister`, `workset remove`, `config reset|unset`): on V1 (`@opencode-ai/plugin`) approval goes through opencode's permission prompt (`context.ask`); a denial returns `{ cancelled: true }` without running anything. On V2 (`@opencode/plugin`) a plugin tool has no reachable confirmation mechanism, so they **run without a prompt**.
+- **Cache:** after any non-read-only command (including failures and timeouts) the injected change list is refreshed.
 
 An optional `workdir` argument overrides the working directory (defaults to session worktree or directory).
+
+#### Security note (V2)
+
+Because V2 cannot prompt, an agent that reads untrusted text (specs, issues, fetched pages) could be steered into archiving or creating changes without a prompt. Archived changes are recoverable through git. The only host-level control on V2 is denying the tool wholesale (`options.permission` is a deny-only visibility filter, see `docs/v2-compat-audit.md`); per-call prompts are not available. `openspec config set|reset`, `store register|remove` and `init`/`update` (with an arbitrary path) also run unprompted and can write outside the project.
 
 ### `openspec_status`
 
@@ -118,4 +128,4 @@ npm install
 npm test
 ```
 
-Tests use Jest with ESM support and mock the Bun `$` shell so no real `openspec` process is spawned.
+Tests use Jest with ESM support and fake the injected `exec` capability so no real `openspec` process is spawned (only `test/exec.test.js` starts real child processes).

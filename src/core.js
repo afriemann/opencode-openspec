@@ -11,7 +11,7 @@
 // See design.md for the full architecture and the confirmation-gating
 // decision (D-1 through D-4, and the dedicated confirmation-gating section).
 
-import { isDestructive, normalizeCommand } from './lib/helpers.js'
+import { parseCommand, classifyCommand, isDestructive } from './lib/helpers.js'
 
 export { isDestructive }
 
@@ -35,6 +35,16 @@ This project uses OpenSpec. Use these tools instead of running \`openspec\` CLI 
 - \`openspec_cli\` — run any openspec subcommand (e.g. \`openspec_cli({ command: "list --json" })\`)
 - \`openspec_status\` — get structured artifact status for a change in canonical order
 - \`openspec_instructions\` — get template, authoring guidance, and output path for an artifact`
+
+export const DEFAULT_TIMEOUT_MS = 120000
+export const MIN_TIMEOUT_MS = 1000
+export const MAX_TIMEOUT_MS = 600000
+const INTERNAL_TIMEOUT_MS = 30000
+
+const BLOCKED_HINT =
+  'This command is not available through openspec_cli. Ask the user to run it in their own terminal.'
+const TIMEOUT_HINT =
+  'The process was killed. Project state may be partly changed: inspect `openspec list` and git status.'
 
 // ---------------------------------------------------------------------------
 // resolveWorkdir (design.md D-4)
@@ -66,21 +76,17 @@ export function resolveWorkdir(args, { defaultDir, sessionID, sessionDirs }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Run `openspec <argsArray>` in cwd via the injected Bun-shell-shaped `$`.
- * Returns { stdout, stderr, exitCode }. A non-zero exit is a normal result.
- * Throws on infrastructure failure (spawn error, openspec not on PATH).
+ * Run `openspec <argv>` in cwd via the injected `exec` capability
+ * (src/lib/exec.js). A non-zero exit is a normal result; `exec` rejects only
+ * when the process cannot be spawned.
  *
- * @param {Function} $ - Bun shell tagged-template-literal function
+ * @param {Function} exec
  * @param {string} cwd
- * @param {string[]} argsArray
+ * @param {string[]} argv
+ * @param {number} [timeoutMs]
  */
-export async function runOpenspec($, cwd, argsArray) {
-  const proc = await $`openspec ${argsArray}`.cwd(cwd).quiet().nothrow()
-  return {
-    stdout: proc.stdout.toString(),
-    stderr: proc.stderr.toString(),
-    exitCode: proc.exitCode ?? 0,
-  }
+export function runOpenspec(exec, cwd, argv, timeoutMs = INTERNAL_TIMEOUT_MS) {
+  return exec(argv, { cwd, timeoutMs })
 }
 
 // ---------------------------------------------------------------------------
@@ -91,16 +97,22 @@ export async function runOpenspec($, cwd, argsArray) {
  * Populate (or refresh) the injection cache entry for a project directory.
  *
  * @param {Map<string, object>} cacheByDir
- * @param {Function} $
+ * @param {Function} exec
  * @param {(level: string, message: string, err?: unknown) => void} log
  * @param {string} dir
+ * @param {number} [timeoutMs]
  */
-export async function populateCache(cacheByDir, $, log, dir) {
+export async function populateCache(cacheByDir, exec, log, dir, timeoutMs) {
   try {
-    const proc = await $`openspec list --json`.cwd(dir).quiet().nothrow()
+    const proc = await runOpenspec(exec, dir, ['list', '--json'], timeoutMs)
+    if (proc.timedOut || proc.exitCode !== 0) {
+      // Keep the last good entry: an empty one would hide the active changes.
+      if (!cacheByDir.has(dir)) cacheByDir.set(dir, { present: true, changes: [], at: Date.now() })
+      return
+    }
     let changes = []
     try {
-      const parsed = JSON.parse(proc.stdout.toString())
+      const parsed = JSON.parse(proc.stdout)
       changes = (parsed.changes ?? []).map(c => ({
         name: c.name,
         done: c.completedTasks ?? 0,
@@ -123,20 +135,21 @@ export async function populateCache(cacheByDir, $, log, dir) {
  * populates (or marks absent) the cache entry for that directory.
  *
  * @param {Map<string, object>} cacheByDir
- * @param {Function} $
+ * @param {Function} exec
  * @param {(level: string, message: string, err?: unknown) => void} log
  * @param {(path: string) => boolean} existsSyncFn
  * @param {string} dir
  * @param {{ join: (...parts: string[]) => string }} pathLib
+ * @param {number} [timeoutMs]
  */
-export async function handleSessionCreated(cacheByDir, $, log, existsSyncFn, dir, pathLib) {
+export async function handleSessionCreated(cacheByDir, exec, log, existsSyncFn, dir, pathLib, timeoutMs) {
   if (!dir) return
   const present = existsSyncFn(pathLib.join(dir, 'openspec'))
   if (!present) {
     cacheByDir.set(dir, { present: false, changes: [], at: Date.now() })
     return
   }
-  await populateCache(cacheByDir, $, log, dir)
+  await populateCache(cacheByDir, exec, log, dir, timeoutMs)
 }
 
 // ---------------------------------------------------------------------------
@@ -176,56 +189,78 @@ export function composeSystemParts(dir, cacheByDir) {
 // ---------------------------------------------------------------------------
 
 /**
- * @typedef {{ $: Function, log: (level: string, message: string, err?: unknown) => void,
+ * @typedef {{ exec: Function, log: (level: string, message: string, err?: unknown) => void,
  *   confirm: ((command: string) => Promise<void>) | null, cacheByDir: Map<string, object> }} Caps
  * @typedef {{ defaultDir: string, sessionID?: string, sessionDirs?: Map<string,string> }} ResolveCtx
  */
 
+const timeoutResult = ({ stdout, stderr }, timeoutMs) => ({
+  stdout,
+  stderr,
+  exitCode: null,
+  timedOut: true,
+  reason: 'timeout',
+  error: `Command exceeded ${timeoutMs} ms`,
+  hint: TIMEOUT_HINT,
+})
+
+const isValidTimeout = (t) => Number.isInteger(t) && t >= MIN_TIMEOUT_MS && t <= MAX_TIMEOUT_MS
+
 /**
- * `openspec_cli` behavior. When `caps.confirm` is `null` (no confirmation
- * mechanism reachable on this runtime, e.g. V2 — see design.md's
- * confirmation-gating decision), a destructive verb is refused WITHOUT
- * spawning any subprocess, rather than silently executing unconfirmed.
+ * `openspec_cli` behavior. Order: parse, validate timeout, blocklist,
+ * confirmation (only when `caps.confirm` is set: V1), run, cache refresh.
+ * On a runtime with no confirmation mechanism (`confirm: null`, V2) a
+ * destructive verb runs; host tool permissions are the gate.
  *
- * @param {{ command: string, workdir?: string }} args
+ * @param {{ command: string, workdir?: string, timeout?: number }} args
  * @param {ResolveCtx} resolveCtx
  * @param {Caps} caps
  * @returns {Promise<string>} JSON-stringified result
  */
 export async function executeOpenspecCli(args, resolveCtx, caps) {
   const workdir = resolveWorkdir(args, resolveCtx)
-  const tokens = normalizeCommand(args.command).trim().split(/\s+/).filter(Boolean)
-  const destructive = isDestructive(args.command)
+  const parsed = parseCommand(args.command)
+  if (!parsed.ok) return JSON.stringify({ error: parsed.error, reason: parsed.reason, exitCode: null })
 
-  if (destructive) {
-    if (caps.confirm) {
-      try {
-        await caps.confirm(args.command)
-      } catch {
-        return JSON.stringify({ cancelled: true })
-      }
-    } else {
-      return JSON.stringify({
-        cancelled: true,
-        reason: 'confirmation-unavailable',
-        hint:
-          'Destructive openspec verbs are not available through openspec_cli on this runtime ' +
-          '(no confirmation mechanism is reachable from a plugin tool here). Run the command ' +
-          'directly with the built-in shell/bash tool instead, which prompts for confirmation.',
-      })
+  const timeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS
+  if (!isValidTimeout(timeoutMs)) {
+    return JSON.stringify({
+      error: `timeout must be an integer between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS} ms`,
+      reason: 'invalid-timeout',
+      exitCode: null,
+    })
+  }
+
+  const { blocked, destructive, readOnly } = classifyCommand(parsed)
+  if (blocked) {
+    return JSON.stringify({
+      cancelled: true,
+      reason: blocked,
+      error: `Refused: \`${parsed.verb}${parsed.subverb ? ' ' + parsed.subverb : ''}\` (${blocked})`,
+      hint: BLOCKED_HINT,
+    })
+  }
+
+  if (destructive && caps.confirm) {
+    try {
+      await caps.confirm(args.command)
+    } catch {
+      return JSON.stringify({ cancelled: true })
     }
   }
 
+  let result
   try {
-    const result = await runOpenspec(caps.$, workdir, tokens)
-    if (destructive && result.exitCode === 0) {
-      await populateCache(caps.cacheByDir, caps.$, caps.log, workdir)
-    }
-    return JSON.stringify(result)
+    result = await runOpenspec(caps.exec, workdir, parsed.argv, timeoutMs)
   } catch (err) {
     caps.log('error', 'openspec_cli spawn failed', err)
-    return JSON.stringify({ error: err?.message ?? String(err), exitCode: null })
+    return JSON.stringify({ error: err?.message ?? String(err), reason: 'spawn-failed', exitCode: null })
   }
+
+  if (!readOnly) await populateCache(caps.cacheByDir, caps.exec, caps.log, workdir)
+
+  if (result.timedOut) return JSON.stringify(timeoutResult(result, timeoutMs))
+  return JSON.stringify({ stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode })
 }
 
 /**
@@ -237,7 +272,8 @@ export async function executeOpenspecCli(args, resolveCtx, caps) {
 export async function executeOpenspecStatus(args, resolveCtx, caps) {
   const workdir = resolveWorkdir(args, resolveCtx)
   try {
-    const result = await runOpenspec(caps.$, workdir, ['status', '--change', args.change, '--json'])
+    const result = await runOpenspec(caps.exec, workdir, ['status', '--change', args.change, '--json'])
+    if (result.timedOut) return JSON.stringify(timeoutResult(result, INTERNAL_TIMEOUT_MS))
     if (result.exitCode !== 0) {
       return JSON.stringify({ error: result.stderr || result.stdout, exitCode: result.exitCode })
     }
@@ -268,7 +304,8 @@ export async function executeOpenspecStatus(args, resolveCtx, caps) {
 export async function executeOpenspecInstructions(args, resolveCtx, caps) {
   const workdir = resolveWorkdir(args, resolveCtx)
   try {
-    const result = await runOpenspec(caps.$, workdir, ['instructions', args.artifact, '--change', args.change, '--json'])
+    const result = await runOpenspec(caps.exec, workdir, ['instructions', args.artifact, '--change', args.change, '--json'])
+    if (result.timedOut) return JSON.stringify(timeoutResult(result, INTERNAL_TIMEOUT_MS))
     if (result.exitCode !== 0) {
       return JSON.stringify({ error: result.stderr || result.stdout, exitCode: result.exitCode })
     }
@@ -299,11 +336,17 @@ export const TOOL_SCHEMAS = {
     properties: {
       command: {
         type: 'string',
-        description: 'Full openspec subcommand and flags, e.g. "list --json" or "new change my-feature"',
+        description: 'Full openspec subcommand and flags, e.g. "list --json" or "new change my-feature"; quotes group arguments',
       },
       workdir: {
         type: 'string',
         description: 'Working directory for openspec; defaults to session worktree or directory',
+      },
+      timeout: {
+        type: 'integer',
+        minimum: MIN_TIMEOUT_MS,
+        maximum: MAX_TIMEOUT_MS,
+        description: `Kill the command after this many milliseconds (default ${DEFAULT_TIMEOUT_MS})`,
       },
     },
     required: ['command'],
@@ -334,11 +377,15 @@ export const TOOL_SCHEMAS = {
 export const TOOL_DESCRIPTIONS = {
   openspec_cli:
     'Run any openspec subcommand. Provide the full subcommand and flags as a single string ' +
-    '(e.g. "list --json", "validate my-change", "status --change my-change --json"). ' +
-    'Returns { stdout, stderr, exitCode }. A non-zero exitCode is a normal result — inspect ' +
-    'stderr for details. Destructive verbs (archive, new change) require user confirmation ' +
-    'before executing and return { cancelled: true } if denied (or refused with ' +
-    '{ cancelled: true, reason: "confirmation-unavailable" } on a runtime with no confirmation mechanism).',
+    '(e.g. "list --json", "new change my-change", "validate my-change", "archive my-change --yes"). ' +
+    'Single/double quotes and backslashes group arguments; no shell expansion, pipes or redirects. ' +
+    'Commands run non-interactively with stdin closed and are killed after `timeout` ms (default 120000). ' +
+    'Returns { stdout, stderr, exitCode }; a non-zero exitCode is a normal result, inspect stderr. ' +
+    'Failures return { error, reason, exitCode: null } (parse-error, invalid-timeout, spawn-failed) or ' +
+    '{ timedOut: true, reason: "timeout" }. Refused without running ({ cancelled: true, reason, hint }): ' +
+    'config edit, workset open (interactive), completion install|uninstall, feedback (outside the project). ' +
+    'Destructive verbs (archive, new change, store remove) ask the user first where the host supports it, ' +
+    'otherwise they run directly; users should restrict openspec_cli with host permissions if that is unwanted.',
   openspec_status:
     'Get structured artifact status for a change. Returns { isPlanningComplete, order, raw } ' +
     'where order is an array of { artifact, status } in the canonical authoring sequence: ' +
