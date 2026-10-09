@@ -3,7 +3,7 @@
 // Drives both src/plugin.v1.js and src/plugin.v2.js with equivalent inputs
 // and asserts they invoke the `openspec` CLI identically and produce
 // identical (unwrapped) results, except for the one asserted divergence:
-// destructive-verb handling with no confirmation mechanism.
+// destructive-verb confirmation (V1 only).
 
 import { jest } from '@jest/globals'
 import OpenSpecPluginV1 from '../src/plugin.v1.js'
@@ -11,46 +11,7 @@ import pluginV2 from '../src/plugin.v2.js'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-
-// ---------------------------------------------------------------------------
-// Shared mock $ (tracks argv + cwd per call, for both adapters)
-// ---------------------------------------------------------------------------
-
-function createTrackedMock$(responseOrError = { stdout: '', stderr: '', exitCode: 0 }) {
-  const calls = []
-  function $(strings, ...values) {
-    const cmd = Array.isArray(strings)
-      ? strings.reduce((acc, s, i) => {
-          const v = values[i]
-          if (v == null) return acc + s
-          if (Array.isArray(v)) return acc + s + v.join(' ')
-          return acc + s + String(v)
-        }, '')
-      : String(strings)
-    const call = { cmd: cmd.trim(), cwd: undefined }
-    calls.push(call)
-
-    const shouldThrow = responseOrError instanceof Error
-    const result = shouldThrow
-      ? null
-      : {
-          stdout: Buffer.from(responseOrError.stdout ?? ''),
-          stderr: Buffer.from(responseOrError.stderr ?? ''),
-          exitCode: responseOrError.exitCode ?? 0,
-        }
-    const chain = {
-      cwd: (dir) => {
-        call.cwd = dir
-        return chain
-      },
-      quiet: () => chain,
-      nothrow: () => (shouldThrow ? Promise.reject(responseOrError) : Promise.resolve(result)),
-    }
-    return chain
-  }
-  $.calls = calls
-  return $
-}
+import { createMockExec } from './support/mock-exec.js'
 
 function createMockV1Client() {
   return { logs: [], app: { log: (opts) => { return Promise.resolve() } } }
@@ -106,19 +67,17 @@ describe('adapter conformance — CLI invocation', () => {
   it('openspec_cli issues identical argv and cwd on both adapters', async () => {
     const responseJson = { stdout: '{"changes":[]}', stderr: '', exitCode: 0 }
 
-    const mockV1$ = createTrackedMock$(responseJson)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+    const mockV1Exec = createMockExec(responseJson)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
     await v1Plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeV1Context())
 
-    const mockV2$ = createTrackedMock$(responseJson)
-    globalThis.Bun = { $: mockV2$ }
+    const mockV2Exec = createMockExec(responseJson)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-    await pluginV2.setup(v2Ctx)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     await v2Ctx._editor.get('openspec_cli').execute({ command: 'list --json' }, { sessionID: 's1' })
-    delete globalThis.Bun
 
-    const v1Call = mockV1$.calls.find((c) => c.cmd.includes('list'))
-    const v2Call = mockV2$.calls.find((c) => c.cmd.includes('list'))
+    const v1Call = mockV1Exec.records.find((c) => c.cmd.includes('list'))
+    const v2Call = mockV2Exec.records.find((c) => c.cmd.includes('list'))
     expect(v1Call.cmd).toBe(v2Call.cmd)
     expect(v1Call.cwd).toBe(v2Call.cwd)
     expect(v1Call.cwd).toBe('/project')
@@ -127,19 +86,17 @@ describe('adapter conformance — CLI invocation', () => {
   it('openspec_status issues identical argv and cwd on both adapters', async () => {
     const responseJson = { stdout: '{"artifacts":[]}', stderr: '', exitCode: 0 }
 
-    const mockV1$ = createTrackedMock$(responseJson)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+    const mockV1Exec = createMockExec(responseJson)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
     await v1Plugin.tool.openspec_status.execute({ change: 'my-change' }, makeV1Context())
 
-    const mockV2$ = createTrackedMock$(responseJson)
-    globalThis.Bun = { $: mockV2$ }
+    const mockV2Exec = createMockExec(responseJson)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-    await pluginV2.setup(v2Ctx)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     await v2Ctx._editor.get('openspec_status').execute({ change: 'my-change' }, { sessionID: 's1' })
-    delete globalThis.Bun
 
-    expect(mockV1$.calls[0].cmd).toBe(mockV2$.calls[0].cmd)
-    expect(mockV1$.calls[0].cwd).toBe(mockV2$.calls[0].cwd)
+    expect(mockV1Exec.records[0].cmd).toBe(mockV2Exec.records[0].cmd)
+    expect(mockV1Exec.records[0].cwd).toBe(mockV2Exec.records[0].cwd)
   })
 
   it('openspec_instructions issues identical argv and cwd on both adapters', async () => {
@@ -149,21 +106,19 @@ describe('adapter conformance — CLI invocation', () => {
       exitCode: 0,
     }
 
-    const mockV1$ = createTrackedMock$(responseJson)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+    const mockV1Exec = createMockExec(responseJson)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
     await v1Plugin.tool.openspec_instructions.execute({ artifact: 'proposal', change: 'my-change' }, makeV1Context())
 
-    const mockV2$ = createTrackedMock$(responseJson)
-    globalThis.Bun = { $: mockV2$ }
+    const mockV2Exec = createMockExec(responseJson)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-    await pluginV2.setup(v2Ctx)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     await v2Ctx._editor
       .get('openspec_instructions')
       .execute({ artifact: 'proposal', change: 'my-change' }, { sessionID: 's1' })
-    delete globalThis.Bun
 
-    expect(mockV1$.calls[0].cmd).toBe(mockV2$.calls[0].cmd)
-    expect(mockV1$.calls[0].cwd).toBe(mockV2$.calls[0].cwd)
+    expect(mockV1Exec.records[0].cmd).toBe(mockV2Exec.records[0].cmd)
+    expect(mockV1Exec.records[0].cwd).toBe(mockV2Exec.records[0].cwd)
   })
 })
 
@@ -181,16 +136,14 @@ describe('adapter conformance — result parity', () => {
 
   for (const { name, response } of cases) {
     it(`openspec_cli returns identical content on ${name}`, async () => {
-      const mockV1$ = createTrackedMock$(response)
-      const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+      const mockV1Exec = createMockExec(response)
+      const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
       const v1Result = await v1Plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeV1Context())
 
-      const mockV2$ = createTrackedMock$(response)
-      globalThis.Bun = { $: mockV2$ }
+      const mockV2Exec = createMockExec(response)
       const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-      await pluginV2.setup(v2Ctx)
+      await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
       const v2Raw = await v2Ctx._editor.get('openspec_cli').execute({ command: 'list --json' }, { sessionID: 's1' })
-      delete globalThis.Bun
 
       // Unwrap V2's {content} envelope for comparison.
       expect(v2Raw.content).toBe(v1Result)
@@ -200,16 +153,14 @@ describe('adapter conformance — result parity', () => {
   it('openspec_status returns identical content on unparseable JSON', async () => {
     const response = { stdout: 'not-json', stderr: '', exitCode: 0 }
 
-    const mockV1$ = createTrackedMock$(response)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+    const mockV1Exec = createMockExec(response)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
     const v1Result = await v1Plugin.tool.openspec_status.execute({ change: 'my-change' }, makeV1Context())
 
-    const mockV2$ = createTrackedMock$(response)
-    globalThis.Bun = { $: mockV2$ }
+    const mockV2Exec = createMockExec(response)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-    await pluginV2.setup(v2Ctx)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     const v2Raw = await v2Ctx._editor.get('openspec_status').execute({ change: 'my-change' }, { sessionID: 's1' })
-    delete globalThis.Bun
 
     expect(v2Raw.content).toBe(v1Result)
   })
@@ -235,15 +186,14 @@ describe('adapter conformance — cache population and system-prompt injection',
     }
 
     // --- V1: event() then experimental.chat.system.transform ---
-    const mockV1$ = createTrackedMock$(listResponse)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: projectDir, $: mockV1$ })
+    const mockV1Exec = createMockExec(listResponse)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: projectDir, exec: mockV1Exec })
     await v1Plugin.event({ event: { type: 'session.created', properties: { directory: projectDir } } })
     const v1Output = { system: [] }
     await v1Plugin['experimental.chat.system.transform']({}, v1Output)
 
     // --- V2: push a session.created event through the subscribe loop, then the context hook ---
-    const mockV2$ = createTrackedMock$(listResponse)
-    globalThis.Bun = { $: mockV2$ }
+    const mockV2Exec = createMockExec(listResponse)
     let contextHook
     const v2Ctx = {
       location: { directory: projectDir },
@@ -281,10 +231,9 @@ describe('adapter conformance — cache population and system-prompt injection',
         },
       },
     }
-    await pluginV2.setup(v2Ctx)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     await new Promise((resolve) => setImmediate(resolve))
     await new Promise((resolve) => setImmediate(resolve))
-    delete globalThis.Bun
 
     const v2Event = { sessionID: 's1', system: [] }
     contextHook(v2Event)
@@ -297,43 +246,40 @@ describe('adapter conformance — cache population and system-prompt injection',
 })
 
 // ---------------------------------------------------------------------------
-// The one asserted divergence: destructive-verb handling
+// The one asserted divergence: destructive-verb confirmation (V1 only)
 // ---------------------------------------------------------------------------
 
-describe('adapter conformance — destructive verb divergence', () => {
-  it('V1 prompts via context.ask and returns {cancelled:true} on denial; neither adapter spawns', async () => {
-    const response = { stdout: '', stderr: '', exitCode: 0 }
-
-    const mockV1$ = createTrackedMock$(response)
-    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', $: mockV1$ })
+describe('adapter conformance — destructive verb confirmation', () => {
+  it('V1 asks via context.ask and does not spawn on denial', async () => {
+    const mockV1Exec = createMockExec()
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
     const v1Ctx = makeV1Context({ ask: jest.fn().mockRejectedValue(new Error('denied')) })
     const v1Result = JSON.parse(
       await v1Plugin.tool.openspec_cli.execute({ command: 'archive my-change --yes' }, v1Ctx),
     )
     expect(v1Ctx.ask).toHaveBeenCalledTimes(1)
     expect(v1Result).toEqual({ cancelled: true })
-    expect(mockV1$.calls.filter((c) => c.cmd.includes('archive'))).toHaveLength(0)
+    expect(mockV1Exec.records).toHaveLength(0)
+  })
 
-    const mockV2$ = createTrackedMock$(response)
-    globalThis.Bun = { $: mockV2$ }
+  it('V2 runs the same command with the same argv and result as an approved V1 call', async () => {
+    const response = { stdout: 'archived', stderr: '', exitCode: 0 }
+    const mockV1Exec = createMockExec(response)
+    const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
+    const v1Result = JSON.parse(
+      await v1Plugin.tool.openspec_cli.execute({ command: 'archive my-change --yes' }, makeV1Context()),
+    )
+
+    const mockV2Exec = createMockExec(response)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
-    await pluginV2.setup(v2Ctx)
-    const v2Raw = await v2Ctx._editor.get('openspec_cli').execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })
-    delete globalThis.Bun
-    const v2Result = JSON.parse(v2Raw.content)
+    await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
+    const v2Result = JSON.parse(
+      (await v2Ctx._editor.get('openspec_cli').execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })).content,
+    )
 
-    // The one asserted divergence: V2 has no confirm mechanism, so it
-    // refuses with a structured, distinct reason instead of prompting.
-    expect(v2Result).toEqual({
-      cancelled: true,
-      reason: 'confirmation-unavailable',
-      hint: expect.any(String),
-    })
-    expect(mockV2$.calls.filter((c) => c.cmd.includes('archive'))).toHaveLength(0)
-
-    // Both agree on the shared invariant: neither adapter ever spawns a
-    // subprocess for a denied/refused destructive command.
-    expect(v1Result.cancelled).toBe(true)
-    expect(v2Result.cancelled).toBe(true)
+    expect(v2Result).toEqual(v1Result)
+    expect(mockV2Exec.records.filter((r) => r.cmd.includes('archive'))).toEqual(
+      mockV1Exec.records.filter((r) => r.cmd.includes('archive')),
+    )
   })
 })

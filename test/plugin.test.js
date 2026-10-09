@@ -8,53 +8,11 @@ import { jest } from '@jest/globals'
 import OpenSpecPlugin from '../src/plugin.v1.js'
 import { runOpenspec, populateCache } from '../src/core.js'
 import { logError } from '../src/lib/helpers.js'
+import { createMockExec } from './support/mock-exec.js'
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Build a mock Bun `$` tagged-template-literal function.
- * Each call to $ returns a chainable object that resolves to `response` on .nothrow().
- *
- * @param {object|Error} responseOrError - response object OR Error to throw from nothrow
- */
-function createMock$(responseOrError = { stdout: '', stderr: '', exitCode: 0 }) {
-  const calls = []
-  function $(strings, ...values) {
-    // Reconstruct the command string for tracking
-    const cmd = Array.isArray(strings)
-      ? strings.reduce((acc, s, i) => {
-          const v = values[i]
-          if (v == null) return acc + s
-          if (Array.isArray(v)) return acc + s + v.join(' ')
-          return acc + s + String(v)
-        }, '')
-      : String(strings)
-    calls.push(cmd.trim())
-
-    const shouldThrow = responseOrError instanceof Error
-    const result = shouldThrow
-      ? null
-      : {
-          stdout: Buffer.from(responseOrError.stdout ?? ''),
-          stderr: Buffer.from(responseOrError.stderr ?? ''),
-          exitCode: responseOrError.exitCode ?? 0,
-        }
-
-    const chain = {
-      cwd: () => chain,
-      quiet: () => chain,
-      nothrow: () =>
-        shouldThrow
-          ? Promise.reject(responseOrError)
-          : Promise.resolve(result),
-    }
-    return chain
-  }
-  $.calls = calls
-  return $
-}
 
 function createMockClient() {
   const logs = []
@@ -112,21 +70,21 @@ const SAMPLE_INSTRUCTIONS_JSON = JSON.stringify({
 
 describe('runOpenspec', () => {
   it('returns stdout, stderr, exitCode on success', async () => {
-    const mock$ = createMock$({ stdout: 'hello', stderr: '', exitCode: 0 })
-    const result = await runOpenspec(mock$, '/dir', ['list', '--json'])
-    expect(result).toEqual({ stdout: 'hello', stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: 'hello', stderr: '', exitCode: 0 })
+    const result = await runOpenspec(mockExec, '/dir', ['list', '--json'])
+    expect(result).toMatchObject({ stdout: 'hello', stderr: '', exitCode: 0 })
   })
 
   it('returns non-zero exitCode as a normal result', async () => {
-    const mock$ = createMock$({ stdout: '', stderr: 'error msg', exitCode: 1 })
-    const result = await runOpenspec(mock$, '/dir', ['validate', 'bad'])
+    const mockExec = createMockExec({ stdout: '', stderr: 'error msg', exitCode: 1 })
+    const result = await runOpenspec(mockExec, '/dir', ['validate', 'bad'])
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toBe('error msg')
   })
 
   it('throws on infrastructure failure (spawn error)', async () => {
-    const mock$ = createMock$(new Error('spawn ENOENT'))
-    await expect(runOpenspec(mock$, '/dir', ['list'])).rejects.toThrow('spawn ENOENT')
+    const mockExec = createMockExec(new Error('spawn ENOENT'))
+    await expect(runOpenspec(mockExec, '/dir', ['list'])).rejects.toThrow('spawn ENOENT')
   })
 })
 
@@ -137,10 +95,10 @@ describe('runOpenspec', () => {
 
 describe('populateCache', () => {
   it('populates cache with parsed changes on success', async () => {
-    const mock$ = createMock$({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
+    await populateCache(cache, mockExec, (level, message, err) => logError(client, message, err, level), '/project')
     const entry = cache.get('/project')
     expect(entry.present).toBe(true)
     expect(entry.changes).toHaveLength(1)
@@ -150,20 +108,20 @@ describe('populateCache', () => {
   })
 
   it('sets changes to [] when JSON parse fails', async () => {
-    const mock$ = createMock$({ stdout: 'not-json', stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: 'not-json', stderr: '', exitCode: 0 })
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
+    await populateCache(cache, mockExec, (level, message, err) => logError(client, message, err, level), '/project')
     const entry = cache.get('/project')
     expect(entry.present).toBe(true)
     expect(entry.changes).toEqual([])
   })
 
   it('logs and sets a fallback entry on spawn failure', async () => {
-    const mock$ = createMock$(new Error('spawn failed'))
+    const mockExec = createMockExec(new Error('spawn failed'))
     const client = createMockClient()
     const cache = new Map()
-    await populateCache(cache, mock$, (level, message, err) => logError(client, message, err, level), '/project')
+    await populateCache(cache, mockExec, (level, message, err) => logError(client, message, err, level), '/project')
     expect(client.logs.length).toBeGreaterThan(0)
     // Fallback entry written (present:true, empty changes)
     const entry = cache.get('/project')
@@ -182,7 +140,7 @@ describe('OpenSpecPlugin factory', () => {
     const plugin = await OpenSpecPlugin({
       client: createMockClient(),
       directory: '/project',
-      $: createMock$(),
+      exec: createMockExec(),
     })
     expect(typeof plugin.event).toBe('function')
     expect(plugin.tool).toBeDefined()
@@ -206,12 +164,12 @@ describe('OpenSpecPlugin factory', () => {
 
 describe('openspec_cli', () => {
   async function makePlugin(shellResponse) {
-    const mock$ = typeof shellResponse === 'object' && shellResponse instanceof Error
-      ? createMock$(shellResponse)
-      : createMock$(shellResponse)
+    const mockExec = typeof shellResponse === 'object' && shellResponse instanceof Error
+      ? createMockExec(shellResponse)
+      : createMockExec(shellResponse)
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
-    return { plugin, mock$, client }
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
+    return { plugin, mockExec, client }
   }
 
   it('runs a read-only command and returns {stdout, stderr, exitCode}', async () => {
@@ -261,14 +219,14 @@ describe('openspec_cli', () => {
   })
 
   it('returns {cancelled:true} and does not spawn when user denies', async () => {
-    const { plugin, mock$ } = await makePlugin({ stdout: '', stderr: '', exitCode: 0 })
+    const { plugin, mockExec } = await makePlugin({ stdout: '', stderr: '', exitCode: 0 })
     const ctx = makeContext({ ask: jest.fn().mockRejectedValue(new Error('denied')) })
     const result = JSON.parse(
       await plugin.tool.openspec_cli.execute({ command: 'archive my-change --yes' }, ctx),
     )
     expect(result).toEqual({ cancelled: true })
-    // The mock$ was called for populateCache at factory init — archive spawn should NOT add calls
-    const archiveCalls = mock$.calls.filter(c => c.includes('archive'))
+    // The mockExec was called for populateCache at factory init — archive spawn should NOT add calls
+    const archiveCalls = mockExec.calls.filter(c => c.includes('archive'))
     expect(archiveCalls.length).toBe(0)
   })
 
@@ -283,25 +241,9 @@ describe('openspec_cli', () => {
   })
 
   it('refreshes cache after a successful mutation', async () => {
-    let callCount = 0
-    // First response is for the mutation; second for the cache refresh list
-    const responses = [
-      { stdout: '', stderr: '', exitCode: 0 },           // archive command
-      { stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 }, // populateCache list
-    ]
-    const mock$ = function(strings, ...values) {
-      const resp = responses[callCount] ?? responses[responses.length - 1]
-      callCount++
-      const result = {
-        stdout: Buffer.from(resp.stdout ?? ''),
-        stderr: Buffer.from(resp.stderr ?? ''),
-        exitCode: resp.exitCode ?? 0,
-      }
-      const chain = { cwd: () => chain, quiet: () => chain, nothrow: () => Promise.resolve(result) }
-      return chain
-    }
+    const mockExec = createMockExec((argv) => (argv[0] === 'list' ? { stdout: SAMPLE_LIST_JSON } : {}))
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     const ctx = makeContext()
     await plugin.tool.openspec_cli.execute({ command: 'archive my-change --yes' }, ctx)
     // After mutation the cache entry should be present with the refreshed data.
@@ -325,10 +267,10 @@ describe('openspec_cli', () => {
 
 describe('openspec_status', () => {
   async function makePlugin(shellResponse) {
-    const mock$ = createMock$(shellResponse)
+    const mockExec = createMockExec(shellResponse)
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
-    return { plugin, mock$, client }
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
+    return { plugin, mockExec, client }
   }
 
   it('returns canonical order: proposal → design → specs → tasks', async () => {
@@ -373,9 +315,9 @@ describe('openspec_status', () => {
   })
 
   it('returns {error} on spawn failure', async () => {
-    const mock$ = createMock$(new Error('spawn ENOENT'))
+    const mockExec = createMockExec(new Error('spawn ENOENT'))
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     const result = JSON.parse(
       await plugin.tool.openspec_status.execute({ change: 'any' }, makeContext()),
     )
@@ -392,10 +334,10 @@ describe('openspec_status', () => {
 
 describe('openspec_instructions', () => {
   async function makePlugin(shellResponse) {
-    const mock$ = createMock$(shellResponse)
+    const mockExec = createMockExec(shellResponse)
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
-    return { plugin, mock$, client }
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
+    return { plugin, mockExec, client }
   }
 
   it('returns template, instruction, and resolvedOutputPath', async () => {
@@ -436,9 +378,9 @@ describe('openspec_instructions', () => {
   })
 
   it('returns {error} on spawn failure', async () => {
-    const mock$ = createMock$(new Error('spawn ENOENT'))
+    const mockExec = createMockExec(new Error('spawn ENOENT'))
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     const result = JSON.parse(
       await plugin.tool.openspec_instructions.execute(
         { artifact: 'proposal', change: 'any' },
@@ -457,41 +399,25 @@ describe('openspec_instructions', () => {
 
 describe('workdir resolution in tools', () => {
   it('uses context.worktree when no workdir arg provided', async () => {
-    let usedWorkdir = null
-    const mock$ = function(strings, ...values) {
-      const chain = {
-        cwd: (d) => { usedWorkdir = d; return chain },
-        quiet: () => chain,
-        nothrow: () => Promise.resolve({ stdout: Buffer.from('{"changes":[]}'), stderr: Buffer.from(''), exitCode: 0 }),
-      }
-      return chain
-    }
+    const mockExec = createMockExec({ stdout: '{"changes":[]}' })
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     await plugin.tool.openspec_status.execute(
       { change: 'my-change' },
       makeContext({ worktree: '/tree', directory: '/dir' }),
     )
-    expect(usedWorkdir).toBe('/tree')
+    expect(mockExec.records[0].cwd).toBe('/tree')
   })
 
   it('uses args.workdir when explicitly provided', async () => {
-    let usedWorkdir = null
-    const mock$ = function(strings, ...values) {
-      const chain = {
-        cwd: (d) => { usedWorkdir = d; return chain },
-        quiet: () => chain,
-        nothrow: () => Promise.resolve({ stdout: Buffer.from('{"changes":[]}'), stderr: Buffer.from(''), exitCode: 0 }),
-      }
-      return chain
-    }
+    const mockExec = createMockExec({ stdout: '{"changes":[]}' })
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     await plugin.tool.openspec_status.execute(
       { change: 'my-change', workdir: '/explicit' },
       makeContext({ worktree: '/tree', directory: '/dir' }),
     )
-    expect(usedWorkdir).toBe('/explicit')
+    expect(mockExec.records[0].cwd).toBe('/explicit')
   })
 })
 
@@ -510,16 +436,16 @@ describe('workdir resolution in tools', () => {
 describe('system-prompt injection', () => {
   /** Helper: build a plugin with a fake existsSync so event handling is testable */
   async function makeInjectionPlugin(presentDir = '/project') {
-    const mock$ = createMock$({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
     const client = createMockClient()
     const fakeExistsSync = (path) => path === `${presentDir}/openspec`
     const plugin = await OpenSpecPlugin({
       client,
       directory: presentDir,
-      $: mock$,
+      exec: mockExec,
       existsSync: fakeExistsSync,
     })
-    return { plugin, mock$, client }
+    return { plugin, mockExec, client }
   }
 
   it('injects tools notice and changes summary when openspec is present (via event)', async () => {
@@ -537,9 +463,9 @@ describe('system-prompt injection', () => {
   })
 
   it('transform pushes static notice on cache miss (no entry yet)', async () => {
-    const mock$ = createMock$({ stdout: '', stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: '', stderr: '', exitCode: 0 })
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     // Don't call event — leave cache empty
     const output = { system: [] }
     await plugin['experimental.chat.system.transform']({}, output)
@@ -547,13 +473,13 @@ describe('system-prompt injection', () => {
   })
 
   it('transform pushes nothing when cache entry has present:false', async () => {
-    const mock$ = createMock$({ stdout: '', stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: '', stderr: '', exitCode: 0 })
     const client = createMockClient()
     // Use injectable existsSync that always returns false (openspec absent)
     const plugin = await OpenSpecPlugin({
       client,
       directory: '/project',
-      $: mock$,
+      exec: mockExec,
       existsSync: () => false,
     })
     await plugin.event({
@@ -564,34 +490,25 @@ describe('system-prompt injection', () => {
     expect(output.system.length).toBe(0)
   })
 
-  it('transform performs no I/O (no $ calls during transform)', async () => {
-    const shellCalls = []
-    const trackingMock$ = function(strings, ...values) {
-      shellCalls.push('called')
-      const chain = {
-        cwd: () => chain,
-        quiet: () => chain,
-        nothrow: () => Promise.resolve({ stdout: Buffer.from(''), stderr: Buffer.from(''), exitCode: 0 }),
-      }
-      return chain
-    }
+  it('transform performs no I/O (no exec calls during transform)', async () => {
+    const trackingMockExec = createMockExec()
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: trackingMock$ })
-    const countBefore = shellCalls.length
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: trackingMockExec })
+    const countBefore = trackingMockExec.records.length
     const output = { system: [] }
     plugin['experimental.chat.system.transform']({}, output) // synchronous now
-    expect(shellCalls.length).toBe(countBefore) // no additional $ calls during transform
+    expect(trackingMockExec.records.length).toBe(countBefore)
   })
 
   it('transform includes changes summary from cached list (no filesystem dependency)', async () => {
     // Build the plugin with an injectable existsSync so the event handler can
     // detect openspec/ presence without touching the real filesystem.
-    const mock$ = createMock$({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
+    const mockExec = createMockExec({ stdout: SAMPLE_LIST_JSON, stderr: '', exitCode: 0 })
     const client = createMockClient()
     const plugin = await OpenSpecPlugin({
       client,
       directory: '/project',
-      $: mock$,
+      exec: mockExec,
       existsSync: (p) => p === '/project/openspec',
     })
     // Fire session.created → event handler sees present=true → populates cache
@@ -615,9 +532,9 @@ describe('system-prompt injection', () => {
 
 describe('error handling', () => {
   it('event hook swallows errors and does not rethrow', async () => {
-    const mock$ = createMock$(new Error('spawn failed'))
+    const mockExec = createMockExec(new Error('spawn failed'))
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     // Should not throw even with a broken $
     await expect(
       plugin.event({ event: { type: 'session.created', properties: { info: { directory: '/project' } } } }),
@@ -625,17 +542,17 @@ describe('error handling', () => {
   })
 
   it('transform hook swallows errors and does not rethrow', async () => {
-    const mock$ = createMock$()
+    const mockExec = createMockExec()
     const client = { app: { log: () => { throw new Error('log broken') } } }
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     const output = { system: [] }
     expect(() => plugin['experimental.chat.system.transform']({}, output)).not.toThrow()
   })
 
   it('tool execute returns {error} rather than throwing on spawn failure', async () => {
-    const mock$ = createMock$(new Error('ENOENT'))
+    const mockExec = createMockExec(new Error('ENOENT'))
     const client = createMockClient()
-    const plugin = await OpenSpecPlugin({ client, directory: '/project', $: mock$ })
+    const plugin = await OpenSpecPlugin({ client, directory: '/project', exec: mockExec })
     const result = JSON.parse(
       await plugin.tool.openspec_cli.execute({ command: 'list' }, makeContext()),
     )
@@ -646,7 +563,7 @@ describe('error handling', () => {
   it('does not call console.* anywhere in the plugin', async () => {
     // Source-level check: no console.* in any plugin source file. Walk
     // src/**/*.js rather than hardcoding a path list — a hardcoded list is
-    // exactly what silently stopped covering src/lib/openspec-runner.js
+    // exactly what silently stopped covering a src/lib helper
     // when that file was split out of index.js, and would equally miss
     // src/core.js/src/plugin.v2.js if hardcoded again.
     const { readFileSync, readdirSync } = await import('node:fs')

@@ -7,14 +7,12 @@
 // `Plugin.define` is a verified identity function, and the package is an
 // optional peer dependency.
 //
-// See design.md for the full decision record, especially the
-// confirmation-gating decision: V2 exposes no plugin-reachable equivalent
-// of V1's `context.ask` (confirmed by reading the installed @opencode/plugin
-// and @opencode/schema types directly — Tool.Context has no ask/permission/
-// confirm field, and PermissionDomain/SessionDomain deliberately omit the
-// operations that could raise one). Destructive openspec_cli commands are
-// therefore refused (not silently executed) on this runtime — see core.js's
-// executeOpenspecCli with `confirm: null`.
+// V2 exposes no plugin-reachable equivalent of V1's `context.ask` (confirmed
+// by reading the installed @opencode/plugin and @opencode/schema types:
+// Tool.Context has no ask/permission/confirm field). Destructive
+// openspec_cli commands therefore run without a plugin-level prompt, with
+// host tool permissions as the gate — see core.js's executeOpenspecCli with
+// `confirm: null` and docs/v2-compat-audit.md.
 //
 // @typedef {import("@opencode/plugin").Plugin} Plugin
 
@@ -29,6 +27,7 @@ import {
   V2_TOOL_OPTIONS,
 } from './core.js'
 import { existsSync } from 'node:fs'
+import { createExec } from './lib/exec.js'
 import { join } from 'node:path'
 
 const PLUGIN_NAME = 'opencode-openspec'
@@ -66,24 +65,15 @@ export default {
    *   session: { hook(name: string, cb: Function): Promise<{dispose(): Promise<void>}> },
    * }} ctx
    */
-  async setup(ctx) {
+  async setup(ctx, { exec = createExec() } = {}) {
     const log = makeLog()
-
-    // design.md D-3: every capability this plugin offers depends on
-    // shelling out to the `openspec` binary. Fail loudly and immediately
-    // if the Bun shell shortcut isn't available, rather than answering
-    // every tool call with an error later.
-    const $ = globalThis.Bun?.$
-    if (!$) {
-      throw new Error(`${PLUGIN_NAME}: globalThis.Bun.$ is not available; this plugin requires the Bun shell runtime.`)
-    }
 
     /** @type {Map<string, object>} */
     const cacheByDir = new Map()
     /** @type {Map<string, string>} sessionID -> directory */
     const sessionDirs = new Map()
 
-    const caps = { $, log, confirm: null, cacheByDir }
+    const caps = { exec, log, confirm: null, cacheByDir }
 
     // ------------------------------------------------------------------
     // Tools (design.md D-2: every descriptor MUST carry V2_TOOL_OPTIONS)
@@ -153,30 +143,13 @@ export default {
     // F5), the cache is populated here directly rather than waiting on an
     // event that may never arrive for this invocation shape.
     //
-    // Bounded by EAGER_CACHE_TIMEOUT_MS (code-review finding): unlike V1,
-    // where cache population was fire-and-forget off the `event` hook and
-    // never blocked plugin load, this call is awaited inside `setup()` — a
-    // hung `openspec` subprocess would otherwise stall the whole plugin's
-    // (and potentially the host's) startup. On timeout, setup() proceeds
-    // with an empty cache (equivalent to a cache miss: the static tools
-    // notice is still injected, no active-changes summary); the underlying
-    // call is left to finish in the background and will still populate the
-    // cache late if it ever completes. The timer itself is always cleared
-    // once the race settles (whichever side wins) so a fast-resolving call
-    // never leaves a dangling 5s timer behind — this matters both for
-    // production shutdown and for test suites asserting no open handles.
-    {
-      let timeoutId
-      await Promise.race([
-        handleSessionCreated(cacheByDir, $, log, existsSync, ctx.location.directory, { join }),
-        new Promise((resolve) => {
-          timeoutId = setTimeout(() => {
-            log('warn', `eager cache population exceeded ${EAGER_CACHE_TIMEOUT_MS}ms; continuing without it`)
-            resolve()
-          }, EAGER_CACHE_TIMEOUT_MS)
-        }),
-      ]).finally(() => clearTimeout(timeoutId))
-    }
+    // Bounded by EAGER_CACHE_TIMEOUT_MS: a hung `openspec` subprocess must not
+    // stall plugin (and potentially host) startup. `exec` kills the process at
+    // the timeout, so a timed-out population leaves an empty cache entry
+    // (equivalent to a cache miss) and nothing running in the background.
+    await handleSessionCreated(
+      cacheByDir, exec, log, existsSync, ctx.location.directory, { join }, EAGER_CACHE_TIMEOUT_MS,
+    )
 
     // ------------------------------------------------------------------
     // Event subscription (session.created -> cache re-population, kept as
@@ -196,7 +169,7 @@ export default {
             if (sessionID && dir) {
               sessionDirs.set(sessionID, dir)
             }
-            await handleSessionCreated(cacheByDir, $, log, existsSync, dir, { join })
+            await handleSessionCreated(cacheByDir, exec, log, existsSync, dir, { join })
           } catch (err) {
             log('error', `event handling failed for '${rawEvent?.type}'`, err)
           }
