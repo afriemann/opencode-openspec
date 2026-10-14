@@ -245,7 +245,7 @@ describe('adapter conformance — cache population and system-prompt injection',
 })
 
 // ---------------------------------------------------------------------------
-// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
+// spec: openspec/specs/tools/spec.md
 // ---------------------------------------------------------------------------
 
 describe('adapter conformance — destructive verb confirmation', () => {
