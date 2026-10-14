@@ -7,12 +7,9 @@
 // `Plugin.define` is a verified identity function, and the package is an
 // optional peer dependency.
 //
-// V2 exposes no plugin-reachable equivalent of V1's `context.ask` (confirmed
-// by reading the installed @opencode/plugin and @opencode/schema types:
-// Tool.Context has no ask/permission/confirm field). Destructive
-// openspec_cli commands therefore run without a plugin-level prompt, with
-// host tool permissions as the gate — see core.js's executeOpenspecCli with
-// `confirm: null` and docs/v2-compat-audit.md.
+// Mutation authorization uses the setup context's permission domain and the
+// actual Tool.Context identity. Missing capability refuses mutations; native
+// rejections propagate unchanged so the host can end a declined step.
 //
 // @typedef {import("@opencode/plugin").Plugin} Plugin
 
@@ -28,17 +25,38 @@ import {
 } from './core.js'
 import { existsSync } from 'node:fs'
 import { createExec } from './lib/exec.js'
+import { permissionUnavailable } from './lib/permissions.js'
 import { join } from 'node:path'
 
 const PLUGIN_NAME = 'opencode-openspec'
 const TOOL_NAMES = ['openspec_cli', 'openspec_status', 'openspec_instructions']
 
-// Bound on how long the eager cache-population call (below) may block
-// setup() before we give up waiting and let the plugin finish loading
-// anyway (code-review finding: a hung `openspec` subprocess — stuck mount,
-// huge repo, misbehaving binary — should degrade to "cache miss" rather
-// than stalling this plugin's, and potentially the whole host's, startup).
+// A hung cache probe must not stall plugin or host startup.
 const EAGER_CACHE_TIMEOUT_MS = 5000
+
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0
+
+async function authorizeMutation(ctx, intent, callingContext) {
+  const permission = ctx.permission
+  if (typeof permission?.assert !== 'function') {
+    return permissionUnavailable('Native permission.assert is unavailable or not callable')
+  }
+  if (!isNonEmptyString(callingContext.sessionID)) {
+    return permissionUnavailable('Actual calling session identity is missing or invalid')
+  }
+  const input = {
+    sessionID: callingContext.sessionID,
+    action: intent.action,
+    resources: [intent.resource],
+    metadata: { operation: intent.operation, workdir: intent.workdir, argv: [...intent.argv] },
+  }
+  if (isNonEmptyString(callingContext.agent)) input.agent = callingContext.agent
+  if (isNonEmptyString(callingContext.messageID) && isNonEmptyString(callingContext.id)) {
+    input.source = { type: 'tool', messageID: callingContext.messageID, id: callingContext.id }
+  }
+  // No save patterns: this call must not manufacture reusable wildcard grants.
+  await permission.assert(input)
+}
 
 /**
  * V2's `Context` has no `app.log` (unlike V1's `client.app.log`), so this
@@ -73,7 +91,10 @@ export default {
     /** @type {Map<string, string>} sessionID -> directory */
     const sessionDirs = new Map()
 
-    const caps = { exec, log, confirm: null, cacheByDir }
+    const caps = {
+      exec, log, confirm: null, cacheByDir, runtime: 'v2',
+      authorize: (intent, callingContext) => authorizeMutation(ctx, intent, callingContext),
+    }
 
     // ------------------------------------------------------------------
     // Tools (design.md D-2: every descriptor MUST carry V2_TOOL_OPTIONS)
@@ -86,7 +107,10 @@ export default {
         input: TOOL_SCHEMAS.openspec_cli,
         options: V2_TOOL_OPTIONS,
         async execute(input, toolCtx) {
-          const resolveCtx = { defaultDir: ctx.location.directory, sessionID: toolCtx.sessionID, sessionDirs }
+          const resolveCtx = {
+            defaultDir: ctx.location.directory, sessionDirs,
+            sessionID: toolCtx?.sessionID, agent: toolCtx?.agent, messageID: toolCtx?.messageID, id: toolCtx?.id,
+          }
           const result = await executeOpenspecCli(input, resolveCtx, caps)
           return { content: result }
         },
@@ -127,26 +151,12 @@ export default {
     })
 
     // ------------------------------------------------------------------
-    // Eager cache population (empirical correction, tasks.md 4.3a)
+    // Eager cache population
     // ------------------------------------------------------------------
     //
-    // `session.created` was expected to fire once per session and drive the
-    // cache population (design.md D-4's original plan, mirroring V1's
-    // `event` hook). Live verification against the real V2 host
-    // (`@opencode/cli` 2.0.3, single-shot `opencode run` invocations)
-    // showed this does NOT hold: the observed event stream for a run goes
-    // straight from setup/catalog events to `session.inbox.enqueued` /
-    // `session.execution.started` — `session.created` never appears.
-    // Since `ctx.location.directory` is already known and stable at
-    // `setup()` time (V2 gives a plugin instance exactly one directory,
-    // matching the fact that `Tool.Context` has none either — design.md
-    // F5), the cache is populated here directly rather than waiting on an
-    // event that may never arrive for this invocation shape.
-    //
-    // Bounded by EAGER_CACHE_TIMEOUT_MS: a hung `openspec` subprocess must not
-    // stall plugin (and potentially host) startup. `exec` kills the process at
-    // the timeout, so a timed-out population leaves an empty cache entry
-    // (equivalent to a cache miss) and nothing running in the background.
+    // Single-shot runs may not emit session.created. The stable load-time
+    // directory allows a bounded probe without waiting for that event;
+    // the executor kills a timed-out probe rather than leaving it running.
     await handleSessionCreated(
       cacheByDir, exec, log, existsSync, ctx.location.directory, { join }, EAGER_CACHE_TIMEOUT_MS,
     )

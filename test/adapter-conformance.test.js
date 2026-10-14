@@ -1,9 +1,5 @@
 // test/adapter-conformance.test.js
-// Layer 2 — shared adapter-conformance suite (design.md D-7, tasks.md 6.1–6.2).
-// Drives both src/plugin.v1.js and src/plugin.v2.js with equivalent inputs
-// and asserts they invoke the `openspec` CLI identically and produce
-// identical (unwrapped) results, except for the one asserted divergence:
-// destructive-verb confirmation (V1 only).
+// Shared invocation/results remain equivalent; command grammar and authorization differ.
 
 import { jest } from '@jest/globals'
 import OpenSpecPluginV1 from '../src/plugin.v1.js'
@@ -35,10 +31,11 @@ function createFakeV2Editor() {
   }
 }
 
-function createFakeV2Ctx({ directory = '/project' } = {}) {
+function createFakeV2Ctx({ directory = '/project', permission } = {}) {
   const editor = createFakeV2Editor()
   return {
     location: { directory },
+    permission,
     tool: {
       async transform(cb) {
         await cb(editor)
@@ -64,23 +61,25 @@ function createFakeV2Ctx({ directory = '/project' } = {}) {
 // ---------------------------------------------------------------------------
 
 describe('adapter conformance — CLI invocation', () => {
-  it('openspec_cli issues identical argv and cwd on both adapters', async () => {
+  it('Read-only command returns stdout and exit code', async () => {
     const responseJson = { stdout: '{"changes":[]}', stderr: '', exitCode: 0 }
 
     const mockV1Exec = createMockExec(responseJson)
     const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
-    await v1Plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeV1Context())
+    const v1Result = await v1Plugin.tool.openspec_cli.execute({ command: 'list --json' }, makeV1Context())
 
     const mockV2Exec = createMockExec(responseJson)
     const v2Ctx = createFakeV2Ctx({ directory: '/project' })
     await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
-    await v2Ctx._editor.get('openspec_cli').execute({ command: 'list --json' }, { sessionID: 's1' })
+    const v2Result = await v2Ctx._editor.get('openspec_cli').execute({ command: 'list --json' }, { sessionID: 's1' })
 
     const v1Call = mockV1Exec.records.find((c) => c.cmd.includes('list'))
     const v2Call = mockV2Exec.records.find((c) => c.cmd.includes('list'))
     expect(v1Call.cmd).toBe(v2Call.cmd)
     expect(v1Call.cwd).toBe(v2Call.cwd)
     expect(v1Call.cwd).toBe('/project')
+    expect(JSON.parse(v1Result)).toEqual(responseJson)
+    expect(v2Result.content).toBe(v1Result)
   })
 
   it('openspec_status issues identical argv and cwd on both adapters', async () => {
@@ -246,7 +245,7 @@ describe('adapter conformance — cache population and system-prompt injection',
 })
 
 // ---------------------------------------------------------------------------
-// The one asserted divergence: destructive-verb confirmation (V1 only)
+// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
 // ---------------------------------------------------------------------------
 
 describe('adapter conformance — destructive verb confirmation', () => {
@@ -262,7 +261,7 @@ describe('adapter conformance — destructive verb confirmation', () => {
     expect(mockV1Exec.records).toHaveLength(0)
   })
 
-  it('V2 runs the same command with the same argv and result as an approved V1 call', async () => {
+  it('Destructive verb executes when no confirmation mechanism is available', async () => {
     const response = { stdout: 'archived', stderr: '', exitCode: 0 }
     const mockV1Exec = createMockExec(response)
     const v1Plugin = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: mockV1Exec })
@@ -271,15 +270,37 @@ describe('adapter conformance — destructive verb confirmation', () => {
     )
 
     const mockV2Exec = createMockExec(response)
-    const v2Ctx = createFakeV2Ctx({ directory: '/project' })
+    const permission = { assert: jest.fn().mockResolvedValue(undefined) }
+    const v2Ctx = createFakeV2Ctx({ directory: '/project', permission })
     await pluginV2.setup(v2Ctx, { exec: mockV2Exec })
     const v2Result = JSON.parse(
       (await v2Ctx._editor.get('openspec_cli').execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })).content,
     )
 
     expect(v2Result).toEqual(v1Result)
+    expect(permission.assert).toHaveBeenCalledTimes(1)
     expect(mockV2Exec.records.filter((r) => r.cmd.includes('archive'))).toEqual(
       mockV1Exec.records.filter((r) => r.cmd.includes('archive')),
     )
+  })
+
+  it.each(['future --option value', 'list --new-option', 'status --change=x', 'list ; rm -rf $HOME'])('V1 command support does not inherit V2 refusals: %s', async (command) => {
+    const v1Exec = createMockExec()
+    const v1 = await OpenSpecPluginV1({ client: createMockV1Client(), directory: '/project', exec: v1Exec })
+    const ask = jest.fn().mockResolvedValue(undefined)
+    const v1Result = JSON.parse(await v1.tool.openspec_cli.execute({ command }, makeV1Context({ ask })))
+    expect(v1Result).toHaveProperty('exitCode', 0)
+    expect(v1Exec.records.length).toBeGreaterThan(0)
+    expect(ask).not.toHaveBeenCalled()
+
+    const v2Exec = createMockExec()
+    const permission = { assert: jest.fn().mockResolvedValue(undefined) }
+    const ctx = createFakeV2Ctx({ permission })
+    const cleanup = await pluginV2.setup(ctx, { exec: v2Exec })
+    const result = JSON.parse((await ctx._editor.get('openspec_cli').execute({ command }, { sessionID: 's1' })).content)
+    expect(result).toMatchObject({ reason: 'unaudited-command', cancelled: true })
+    expect(v2Exec.records).toHaveLength(0)
+    expect(permission.assert).not.toHaveBeenCalled()
+    await cleanup()
   })
 })

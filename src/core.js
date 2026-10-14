@@ -1,17 +1,9 @@
-// src/core.js — opencode-openspec, runtime-agnostic core.
-//
-// Holds every behavior that does NOT depend on which opencode plugin API
-// (V1 or V2) is hosting this plugin: the `openspec` CLI wrapper, the
-// injection cache, workdir resolution, the three tools' argument/result
-// handling, and system-prompt composition. Neither `@opencode-ai/plugin`
-// nor `@opencode/plugin` is ever imported here — every host capability
-// (the shell-exec function, logging, and the confirmation mechanism) is
-// injected by the calling adapter.
-//
-// See design.md for the full architecture and the confirmation-gating
-// decision (D-1 through D-4, and the dedicated confirmation-gating section).
+// Runtime-agnostic CLI execution, injection cache and prompt composition.
+// Adapters inject host execution, logging and authorization capabilities;
+// neither plugin SDK is imported here.
 
 import { parseCommand, classifyCommand, isDestructive } from './lib/helpers.js'
+import { createPermissionIntent, permissionUnavailable } from './lib/permissions.js'
 
 export { isDestructive }
 
@@ -190,8 +182,10 @@ export function composeSystemParts(dir, cacheByDir) {
 
 /**
  * @typedef {{ exec: Function, log: (level: string, message: string, err?: unknown) => void,
- *   confirm: ((command: string) => Promise<void>) | null, cacheByDir: Map<string, object> }} Caps
- * @typedef {{ defaultDir: string, sessionID?: string, sessionDirs?: Map<string,string> }} ResolveCtx
+ *   confirm: ((command: string) => Promise<void>) | null, cacheByDir: Map<string, object>,
+ *   runtime?: string, authorize?: (intent: object, context: object) => Promise<object | void> }} Caps
+ * @typedef {{ defaultDir: string, sessionID?: string, sessionDirs?: Map<string,string>,
+ *   agent?: string, messageID?: string, id?: string }} ResolveCtx
  */
 
 const timeoutResult = ({ stdout, stderr }, timeoutMs) => ({
@@ -207,10 +201,8 @@ const timeoutResult = ({ stdout, stderr }, timeoutMs) => ({
 const isValidTimeout = (t) => Number.isInteger(t) && t >= MIN_TIMEOUT_MS && t <= MAX_TIMEOUT_MS
 
 /**
- * `openspec_cli` behavior. Order: parse, validate timeout, blocklist,
- * confirmation (only when `caps.confirm` is set: V1), run, cache refresh.
- * On a runtime with no confirmation mechanism (`confirm: null`, V2) a
- * destructive verb runs; host tool permissions are the gate.
+ * Native authorization is outside spawn-error conversion: a host decline
+ * must retain its step-ending control flow, not become ordinary tool output.
  *
  * @param {{ command: string, workdir?: string, timeout?: number }} args
  * @param {ResolveCtx} resolveCtx
@@ -218,7 +210,7 @@ const isValidTimeout = (t) => Number.isInteger(t) && t >= MIN_TIMEOUT_MS && t <=
  * @returns {Promise<string>} JSON-stringified result
  */
 export async function executeOpenspecCli(args, resolveCtx, caps) {
-  const workdir = resolveWorkdir(args, resolveCtx)
+  let workdir = resolveWorkdir(args, resolveCtx)
   const parsed = parseCommand(args.command)
   if (!parsed.ok) return JSON.stringify({ error: parsed.error, reason: parsed.reason, exitCode: null })
 
@@ -231,7 +223,9 @@ export async function executeOpenspecCli(args, resolveCtx, caps) {
     })
   }
 
-  const { blocked, destructive, readOnly } = classifyCommand(parsed)
+  const classification = classifyCommand(parsed)
+  const { blocked, destructive } = classification
+  let readOnly = classification.readOnly
   if (blocked) {
     return JSON.stringify({
       cancelled: true,
@@ -241,7 +235,19 @@ export async function executeOpenspecCli(args, resolveCtx, caps) {
     })
   }
 
-  if (destructive && caps.confirm) {
+  let argv = parsed.argv
+  if (caps.runtime === 'v2') {
+    const intent = createPermissionIntent(parsed, workdir)
+    if (!intent.ok) return JSON.stringify(intent.refusal)
+    ;({ workdir, argv, readOnly } = intent)
+    if (!readOnly) {
+      if (typeof caps.authorize !== 'function') {
+        return JSON.stringify(permissionUnavailable('Native authorization capability is unavailable'))
+      }
+      const refusal = await caps.authorize(intent, resolveCtx)
+      if (refusal) return JSON.stringify(refusal)
+    }
+  } else if (destructive && caps.confirm) {
     try {
       await caps.confirm(args.command)
     } catch {
@@ -251,7 +257,7 @@ export async function executeOpenspecCli(args, resolveCtx, caps) {
 
   let result
   try {
-    result = await runOpenspec(caps.exec, workdir, parsed.argv, timeoutMs)
+    result = await runOpenspec(caps.exec, workdir, argv, timeoutMs)
   } catch (err) {
     caps.log('error', 'openspec_cli spawn failed', err)
     return JSON.stringify({ error: err?.message ?? String(err), reason: 'spawn-failed', exitCode: null })
@@ -384,8 +390,11 @@ export const TOOL_DESCRIPTIONS = {
     'Failures return { error, reason, exitCode: null } (parse-error, invalid-timeout, spawn-failed) or ' +
     '{ timedOut: true, reason: "timeout" }. Refused without running ({ cancelled: true, reason, hint }): ' +
     'config edit, workset open (interactive), completion install|uninstall, feedback (outside the project). ' +
-    'Destructive verbs (archive, new change, store remove) ask the user first where the host supports it, ' +
-    'otherwise they run directly; users should restrict openspec_cli with host permissions if that is unwanted.',
+    'V1 asks before destructive verbs. V2 accepts audited OpenSpec 1.14.1 forms only; unaudited forms ' +
+    'return reason "unaudited-command". V2 mutations await native operation-specific permission assertions ' +
+    '(allow may proceed without prompting; ask waits; denial/rejection propagates before spawning). ' +
+    'Missing permission.assert or session identity refuses mutations with reason "permission-unavailable". ' +
+    'V2 requires separate option/value tokens; --flag=value, -- terminators and short-flag bundles are refused.',
   openspec_status:
     'Get structured artifact status for a change. Returns { isPlanningComplete, order, raw } ' +
     'where order is an array of { artifact, status } in the canonical authoring sequence: ' +

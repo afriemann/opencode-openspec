@@ -72,13 +72,14 @@ function createFakeEventStream() {
   return { iterable, pushEvent, close }
 }
 
-function createFakeCtx({ directory = '/project', eventStream, editor, toolDisposeSpy, hookDisposeSpy } = {}) {
+function createFakeCtx({ directory = '/project', eventStream, editor, toolDisposeSpy, hookDisposeSpy, permission } = {}) {
   const stream = eventStream ?? createFakeEventStream()
   const fakeEditor = editor ?? createFakeEditor()
   let contextHookCallback = null
 
   return {
     location: { directory },
+    permission,
     tool: {
       async transform(cb) {
         await cb(fakeEditor)
@@ -360,7 +361,7 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
 
       const cliTool = ctx._fakeEditor.get('openspec_cli')
       await cliTool.execute({ command: 'list --json', workdir: '/explicit-dir' }, { sessionID: 's1' })
-      expect(mockExec.calls.some((c) => c.startsWith('cd:'))).toBe(false) // sanity: mock doesn't track cwd via cmd string
+      expect(mockExec.records.at(-1).cwd).toBe('/explicit-dir')
 
       await cleanup()
     })()
@@ -377,6 +378,7 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
       const cliTool = ctx._fakeEditor.get('openspec_cli')
       const result = JSON.parse(await (await cliTool.execute({ command: 'list --json' }, { sessionID: 's1' })).content)
       expect(result.stdout).toBe('ok')
+      expect(mockExec.records.at(-1).cwd).toBe('/session-dir')
 
       await cleanup()
     })()
@@ -384,18 +386,102 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Confirmation-gating: destructive verbs on V2 (no confirm mechanism)
+// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
 // ---------------------------------------------------------------------------
 
-describe('plugin.v2 destructive verb handling', () => {
-  it('executes a destructive command without a plugin-level prompt', async () => {
+describe('plugin.v2 native permissions', () => {
+  // Verified v2.0.29 packages/plugin/src/{promise/tool,permission}.ts.
+  const toolContext = {
+    sessionID: 's1', agent: 'engineer', messageID: 'm1', id: 'call1',
+    signal: new AbortController().signal, progress: jest.fn().mockResolvedValue(undefined),
+  }
+
+  it('Native request matches the v2.0.29 input contract', async () => {
     const mockExec = createMockExec({ stdout: 'archived', stderr: '', exitCode: 0 })
-    const ctx = createFakeCtx()
+    const permission = { assert: jest.fn(function (input) {
+      expect(this).toBe(permission)
+      expect(input).toEqual({
+        sessionID: 's1', agent: 'engineer', action: 'openspec.archive',
+        resources: ['["/project","archive","my-change","--yes"]'],
+        source: { type: 'tool', messageID: 'm1', id: 'call1' },
+        metadata: { operation: 'archive', workdir: '/project', argv: ['archive', 'my-change', '--yes'] },
+      })
+      input.metadata.argv[0] = 'tampered'
+      return Promise.resolve()
+    }) }
+    const ctx = createFakeCtx({ permission })
     const cleanup = await plugin.setup(ctx, { exec: mockExec })
     const cliTool = ctx._fakeEditor.get('openspec_cli')
-    const result = JSON.parse((await cliTool.execute({ command: 'archive my-change --yes' }, { sessionID: 's1' })).content)
+    const result = JSON.parse((await cliTool.execute({ command: 'archive my-change --yes' }, toolContext)).content)
     expect(result).toEqual({ stdout: 'archived', stderr: '', exitCode: 0 })
     expect(mockExec.calls).toContain('openspec archive my-change --yes')
+    expect(permission.assert).toHaveBeenCalledTimes(1)
+    await cleanup()
+  })
+
+  it.each([
+    {}, { agent: '', messageID: 'm1' }, { agent: [], messageID: 'm1', id: 1 },
+    { agent: ' ', messageID: '', id: 'call1' },
+  ])('Missing or malformed optional provenance is omitted: %p', async (optional) => {
+    const permission = { assert: jest.fn().mockResolvedValue(undefined) }
+    const ctx = createFakeCtx({ permission })
+    const mockExec = createMockExec()
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    await ctx._fakeEditor.get('openspec_cli').execute({ command: 'new change x' }, { sessionID: 's1', ...optional })
+    expect(permission.assert).toHaveBeenCalledTimes(1)
+    const input = permission.assert.mock.lastCall[0]
+    expect(input).not.toHaveProperty('agent')
+    expect(input).not.toHaveProperty('source')
+    expect(input).not.toHaveProperty('save')
+    expect(input).not.toHaveProperty('message')
+    await cleanup()
+  })
+
+  it.each([undefined, {}, { assert: null }, { assert: 'not callable' }])('Missing or non-callable assertion refuses mutations: %p', async (permission) => {
+    const ctx = createFakeCtx({ permission })
+    const mockExec = createMockExec()
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    const result = JSON.parse((await ctx._fakeEditor.get('openspec_cli').execute({ command: 'archive x --yes' }, toolContext)).content)
+    expect(result).toMatchObject({ cancelled: true, reason: 'permission-unavailable', error: expect.any(String), hint: expect.stringContaining('2.0.29') })
+    expect(mockExec.records).toHaveLength(0)
+    await cleanup()
+  })
+
+  it.each([undefined, '', ' ', 1, {}])('Invalid session identity refuses mutations: %p', async (sessionID) => {
+    const permission = { assert: jest.fn().mockResolvedValue(undefined) }
+    const ctx = createFakeCtx({ permission })
+    const mockExec = createMockExec()
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    const result = JSON.parse((await ctx._fakeEditor.get('openspec_cli').execute({ command: 'new change x' }, { sessionID })).content)
+    expect(result).toMatchObject({ cancelled: true, reason: 'permission-unavailable' })
+    expect(permission.assert).not.toHaveBeenCalled()
+    expect(mockExec.records).toHaveLength(0)
+    await cleanup()
+  })
+
+  it('Older manually loaded runtime retains read-only functionality', async () => {
+    const ctx = createFakeCtx()
+    const mockExec = createMockExec({ stdout: '{"artifacts":[]}', exitCode: 0 })
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    for (const [name, args] of [
+      ['openspec_cli', { command: 'list --json' }],
+      ['openspec_status', { change: 'x' }],
+      ['openspec_instructions', { change: 'x', artifact: 'proposal' }],
+    ]) {
+      const result = JSON.parse((await ctx._fakeEditor.get(name).execute(args, toolContext)).content)
+      expect(result).not.toHaveProperty('cancelled')
+    }
+    expect(mockExec.records).toHaveLength(3)
+    await cleanup()
+  })
+
+  it('Plain rejection preserves step-ending control flow', async () => {
+    const rejection = new Error('native decline')
+    const ctx = createFakeCtx({ permission: { assert: jest.fn().mockRejectedValue(rejection) } })
+    const mockExec = createMockExec()
+    const cleanup = await plugin.setup(ctx, { exec: mockExec })
+    await expect(ctx._fakeEditor.get('openspec_cli').execute({ command: 'archive x --yes' }, toolContext)).rejects.toBe(rejection)
+    expect(mockExec.records).toHaveLength(0)
     await cleanup()
   })
 
