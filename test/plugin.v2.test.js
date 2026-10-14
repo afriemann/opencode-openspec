@@ -386,7 +386,7 @@ describe('plugin.v2 resolveWorkdir precedence', () => {
 })
 
 // ---------------------------------------------------------------------------
-// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
+// spec: openspec/specs/tools/spec.md
 // ---------------------------------------------------------------------------
 
 describe('plugin.v2 native permissions', () => {

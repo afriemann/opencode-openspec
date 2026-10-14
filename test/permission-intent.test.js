@@ -1,4 +1,4 @@
-// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
+// spec: openspec/specs/tools/spec.md
 import { jest } from '@jest/globals'
 import { resolve } from 'node:path'
 import { executeOpenspecCli } from '../src/core.js'

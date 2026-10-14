@@ -1,5 +1,5 @@
 // test/cli-pipeline.test.js
-// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
+// spec: openspec/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
 import { executeOpenspecCli, executeOpenspecStatus, executeOpenspecInstructions } from '../src/core.js'
