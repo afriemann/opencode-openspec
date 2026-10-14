@@ -1,5 +1,5 @@
 // test/cli-pipeline.test.js
-// spec: openspec/changes/full-cli-support/specs/tools/spec.md
+// spec: openspec/changes/v2-permission-assert/specs/tools/spec.md
 
 import { jest } from '@jest/globals'
 import { executeOpenspecCli, executeOpenspecStatus, executeOpenspecInstructions } from '../src/core.js'
@@ -7,12 +7,12 @@ import { createMockExec } from './support/mock-exec.js'
 
 const resolveCtx = { defaultDir: '/project' }
 
-function setup({ response, confirm = null } = {}) {
+function setup({ response, confirm = null, runtime = 'v2', authorize = jest.fn().mockResolvedValue(undefined), context = resolveCtx } = {}) {
   const exec = createMockExec(response)
   const cacheByDir = new Map()
   const log = jest.fn()
-  const run = async (args) => JSON.parse(await executeOpenspecCli(args, resolveCtx, { exec, log, confirm, cacheByDir }))
-  return { exec, run, cacheByDir, log }
+  const run = async (args) => JSON.parse(await executeOpenspecCli(args, context, { exec, log, confirm, cacheByDir, runtime, authorize }))
+  return { exec, run, cacheByDir, log, authorize }
 }
 
 const LIST = (names) => JSON.stringify({ changes: names.map((name) => ({ name, completedTasks: 0, totalTasks: 1 })) })
@@ -52,6 +52,13 @@ describe('openspec_cli pipeline', () => {
       await run({ command: 'feedback --help' })
       expect(exec.records).toHaveLength(1)
     })
+
+    it('Help flag used as an option value does not bypass the blocklist', async () => {
+      const { run, exec, authorize } = setup()
+      expect(await run({ command: 'feedback hi --body -h' })).toMatchObject({ reason: 'out-of-scope-side-effect', cancelled: true })
+      expect(exec.records).toHaveLength(0)
+      expect(authorize).not.toHaveBeenCalled()
+    })
   })
 
   describe('execution', () => {
@@ -61,12 +68,12 @@ describe('openspec_cli pipeline', () => {
       expect(exec.records[0].argv).toEqual(['archive', 'my-change'])
     })
 
-    it('returns { stdout, stderr, exitCode } without extra fields on a normal run', async () => {
+    it('Non-zero exit from CLI is a normal return', async () => {
       const { run } = setup({ response: { stdout: 'o', stderr: 'e', exitCode: 2 } })
       expect(await run({ command: 'validate x' })).toEqual({ stdout: 'o', stderr: 'e', exitCode: 2 })
     })
 
-    it('returns spawn-failed with exitCode null and logs when the process cannot start', async () => {
+    it('openspec not on PATH returns a structured error', async () => {
       const { run, log } = setup({ response: new Error('spawn ENOENT') })
       expect(await run({ command: 'list' })).toMatchObject({ reason: 'spawn-failed', exitCode: null })
       expect(log).toHaveBeenCalledWith('error', expect.any(String), expect.any(Error))
@@ -80,13 +87,13 @@ describe('openspec_cli pipeline', () => {
       expect(exec.records[0].timeoutMs).toBe(120000)
     })
 
-    it('passes an explicit timeout through', async () => {
+    it('Default timeout applies when omitted: an explicit timeout overrides it', async () => {
       const { exec, run } = setup()
       await run({ command: 'list', timeout: 5000 })
       expect(exec.records[0].timeoutMs).toBe(5000)
     })
 
-    it.each([10, 600001, 1.5, '1000'])('Out-of-range timeout %p is rejected', async (timeout) => {
+    it.each([10, 600001, 1.5, '1000'])('Out-of-range timeout is rejected: %p', async (timeout) => {
       const { exec, run } = setup()
       expect(await run({ command: 'list', timeout })).toMatchObject({ reason: 'invalid-timeout', exitCode: null })
       expect(exec.records).toHaveLength(0)
@@ -102,15 +109,17 @@ describe('openspec_cli pipeline', () => {
 
   describe('gating', () => {
     it('Destructive verb executes when no confirmation mechanism is available', async () => {
-      const { exec, run } = setup({ confirm: null })
+      const authorize = jest.fn().mockResolvedValue(undefined)
+      const { exec, run } = setup({ runtime: 'v2', authorize })
       const r = await run({ command: 'archive my-change --yes' })
       expect(exec.records[0].argv).toEqual(['archive', 'my-change', '--yes'])
       expect(r).not.toHaveProperty('cancelled')
+      expect(authorize).toHaveBeenCalledTimes(1)
     })
 
     it('archive command triggers confirmation', async () => {
       const confirm = jest.fn().mockResolvedValue(undefined)
-      const { exec, run } = setup({ confirm })
+      const { exec, run } = setup({ confirm, runtime: 'v1' })
       await run({ command: 'archive my-change --yes' })
       expect(confirm).toHaveBeenCalledTimes(1)
       expect(exec.records.map((r) => r.argv[0])).toContain('archive')
@@ -118,23 +127,24 @@ describe('openspec_cli pipeline', () => {
 
     it('User denial returns cancelled result', async () => {
       const confirm = jest.fn().mockRejectedValue(new Error('denied'))
-      const { exec, run } = setup({ confirm })
+      const { exec, run } = setup({ confirm, runtime: 'v1' })
       expect(await run({ command: 'new change x' })).toEqual({ cancelled: true })
       expect(exec.records).toHaveLength(0)
     })
 
     it('Leading global option does not bypass the gate', async () => {
       const confirm = jest.fn().mockResolvedValue(undefined)
-      const { run } = setup({ confirm })
+      const { run } = setup({ confirm, runtime: 'v1' })
       await run({ command: '--no-color archive my-change --yes' })
       expect(confirm).toHaveBeenCalledTimes(1)
     })
 
     it('Read-only command with change name containing archive is not gated', async () => {
       const confirm = jest.fn()
-      const { run } = setup({ confirm })
+      const { run, authorize } = setup({ confirm })
       await run({ command: 'status --change archive-cleanup --json' })
       expect(confirm).not.toHaveBeenCalled()
+      expect(authorize).not.toHaveBeenCalled()
     })
   })
 
@@ -158,7 +168,7 @@ describe('openspec_cli pipeline', () => {
       expect(b.exec.calls).toContain('openspec list --json')
     })
 
-    it('keeps the previous cache entry when the refresh fails or times out', async () => {
+    it('Failed refresh keeps the previous cache entry', async () => {
       const previous = { present: true, changes: [{ name: 'old', done: 1, total: 2 }], at: 1 }
       for (const bad of [{ exitCode: 1 }, { timedOut: true, exitCode: null }]) {
         const { run, cacheByDir } = setup({ response: (argv) => (argv[0] === 'list' ? bad : {}) })
@@ -168,8 +178,8 @@ describe('openspec_cli pipeline', () => {
       }
     })
 
-    it('refreshes after a verb unknown to the plugin', async () => {
-      const { exec, run } = setup({ response })
+    it('refreshes after a verb unknown to the plugin (V1)', async () => {
+      const { exec, run } = setup({ response, runtime: 'v1' })
       await run({ command: 'some-future-verb' })
       expect(exec.calls).toContain('openspec list --json')
     })
@@ -179,6 +189,70 @@ describe('openspec_cli pipeline', () => {
       await run({ command: 'list --json' })
       expect(exec.calls).toEqual(['openspec list --json'])
     })
+  })
+})
+
+describe('V2 native authorization boundary', () => {
+  it('Allowed invocation proceeds without plugin confirmation', async () => {
+    const confirm = jest.fn()
+    const authorize = jest.fn().mockResolvedValue(undefined)
+    const { exec, run } = setup({ runtime: 'v2', authorize, confirm })
+    await run({ command: 'new change x' })
+    expect(authorize).toHaveBeenCalledTimes(1)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(exec.records[0].argv).toEqual(['new', 'change', 'x'])
+  })
+
+  it('Pending ask prevents execution until approval', async () => {
+    let approve
+    const pending = new Promise((resolve) => { approve = resolve })
+    const authorize = jest.fn(() => pending)
+    const { exec, run } = setup({ runtime: 'v2', authorize })
+    const result = run({ command: 'archive x --yes' })
+    await Promise.resolve()
+    expect(exec.records).toHaveLength(0)
+    approve()
+    await result
+    expect(exec.records.map(r => r.argv[0])).toEqual(['archive', 'list'])
+  })
+
+  it('Pending approval cannot change the executed invocation', async () => {
+    let approve
+    const pending = new Promise((resolve) => { approve = resolve })
+    const context = { defaultDir: '/fallback', sessionID: 's1', sessionDirs: new Map([['s1', '/original']]) }
+    const authorize = jest.fn((intent) => {
+      expect(() => { intent.argv[2] = 'tampered' }).toThrow(TypeError)
+      return pending
+    })
+    const { exec, run } = setup({ runtime: 'v2', authorize, context })
+    const args = { command: 'new change original', timeout: 5000 }
+    const result = run(args)
+    await Promise.resolve()
+    expect(authorize).toHaveBeenCalledTimes(1)
+    context.sessionDirs.set('s1', '/changed')
+    args.command = 'store remove everything'
+    args.workdir = '/elsewhere'
+    args.timeout = 1000
+    approve()
+    await result
+    expect(exec.records[0]).toMatchObject({ cwd: '/original', argv: ['new', 'change', 'original'], timeoutMs: 5000 })
+  })
+
+  it.each([
+    ['Configured denial propagates before spawn', new Error('denied')],
+    ['Plain rejection preserves step-ending control flow', new Error('declined')],
+    ['Corrective feedback rejection is preserved', Object.assign(new Error('corrected'), { feedback: 'use a different change' })],
+    ['Permission service failure fails closed', new Error('service unavailable')],
+  ])('%s', async (_title, error) => {
+    for (const authorize of [jest.fn(() => { throw error }), jest.fn().mockRejectedValue(error)]) {
+      const { exec, run, log, cacheByDir } = setup({ runtime: 'v2', authorize })
+      const previous = { present: true, changes: [], at: 1 }
+      cacheByDir.set('/project', previous)
+      await expect(run({ command: 'archive x --yes' })).rejects.toBe(error)
+      expect(exec.records).toHaveLength(0)
+      expect(cacheByDir.get('/project')).toBe(previous)
+      expect(log).not.toHaveBeenCalled()
+    }
   })
 })
 

@@ -17,7 +17,7 @@
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.15.0",
-    "@opencode/plugin": ">=2.0.0"
+    "@opencode/plugin": ">=2.0.29"
   },
   "peerDependenciesMeta": {
     "@opencode-ai/plugin": {
@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@opencode-ai/plugin": ">=1.15.0",
-    "@opencode/plugin": "^2.0.24",
+    "@opencode/plugin": "2.0.29",
     "jest": "^30.0.0"
   }
 }

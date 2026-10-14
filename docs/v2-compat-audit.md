@@ -1,8 +1,50 @@
 # opencode V2 Compatibility Audit — `opencode-openspec`
 
-**Status:** Superseded — see the `v2-plugin-migration` change for the real V2 port. This
-document is retained as a historical record and is updated below with the corrected
-understanding and final verification results.
+**Status:** Version-aware audit. The lifecycle verification below records the original
+2.0.3 port; mutation authorization is supported on 2.0.29+ as described here. Historical
+claims that the plugin cannot assert permissions do not apply to that newer API.
+
+## Native mutation authorization (v2.0.29+)
+
+The exact OpenCode `v2.0.29` tag resolves to commit
+`042d0832f5f3a73eaa039a58a7d565776f6d4290`. Its
+[Promise permission API](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/plugin/src/promise/permission.ts)
+exposes `ctx.permission.assert(input): Promise<void>`; it is absent in the sampled
+`v2.0.28` API. A local checkout named `v2` is not evidence of this tagged contract.
+
+The [plugin input schema](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/plugin/src/permission.ts)
+requires `sessionID`, `action`, and `resources: string[]`; optional fields are `agent`,
+`save`, `metadata`, and `source`. Tool provenance is `{ type: "tool", messageID, id }`.
+There is no `message` or signal input field. The tagged
+[Promise tool context](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/plugin/src/promise/tool.ts)
+adds `signal: AbortSignal` and Promise-based `progress` to the base tool context;
+separate cancellation handling remains outside this change. This plugin forwards actual calling identity and
+well-formed optional provenance, supplies readable invocation metadata, and omits `save`.
+
+Shared core validates an audited CLI 1.14.1 invocation, then awaits the V2 adapter's
+assertion **outside** spawn-error conversion. Each mutator has its own action, such as
+`openspec.new.change`, `openspec.archive`, or `openspec.store.remove`. One JSON-encoded
+resource binds the lexical absolute cwd and immutable argv used for execution. This
+authorizes the invocation's CLI-resolved effects, including external/global writes;
+it is not a filesystem containment rule or an environment snapshot.
+
+The [native core evaluator](https://github.com/anomalyco/opencode/blob/v2.0.29/packages/core/src/permission.ts)
+uses ordered `{ action, resource, effect }` rules under top-level `permissions`, with
+last-match-wins and default ask. Allow can resolve without prompting; ask waits.
+Configured deny is evaluated before saved allows. Denial, feedback rejection, plain
+decline, and service errors propagate unchanged with no invocation or related refresh.
+Plain decline must retain the host's step-ending control flow, not become tool output.
+Omitting `save` prevents new reusable grants, but does not erase existing allows.
+
+Full V2 support declares optional peer `>=2.0.29` and development SDK `2.0.29`. A runtime
+capability check independently refuses mutations if assertion is non-callable or session
+identity is invalid. Older manually loaded V2 runtimes retain audited reads/context;
+strict package managers may reject their peer mismatch. V1 confirmation remains unchanged.
+
+The [README](../README.md#permission-rules-and-security-boundaries-v2) contains native
+rules, action inventory, syntax restrictions, wildcard caveats, and integration limits.
+The added tests use the tagged schema-shaped context and injected native assertion;
+they do not claim a live interactive-host verification on 2.0.29.
 
 ## Retraction of the original (2026-09-15) finding
 
@@ -13,8 +55,6 @@ load-time crash (`command.trim is not a function`). Two corrections apply to tha
 1. **`opencode-ai@dev` is not the real V2 product.** The real, documented V2 migration target
    is the separate npm package `@opencode/cli`/`@opencode/plugin` (stable, currently 2.0.x).
    `opencode-ai` (all its dist-tags, including `dev`) is V1's own evolving prerelease channel.
-   See the shared `reality/opencode-v2-sandbox-plugin-compat` memory atom for the full
-   correction history.
 2. **The crash itself was real, but it was a bug in opencode's own legacy (V1) plugin loader**
    (`getLegacyPlugins`), not a V2-specific issue: that loader speculatively invokes every
    *named* export of a plugin module (not just `default`) with the same argument it passes to
@@ -49,7 +89,7 @@ V1 specifically; it is applied uniformly to both files as a defensive baseline).
 | `event` hook, filtered for `session.created` | `ctx.event.subscribe({signal})`, a detached async iterator stopped via an `AbortController` in the `setup()` cleanup |
 | `experimental.chat.system.transform` | `ctx.session.hook("context", (event) => { event.system.push({type:'text', text}) })` — note V2 wraps each pushed part in an object, unlike V1's bare strings |
 | `PluginInput.$` (Bun shell shortcut) | **not used**: both adapters spawn `openspec` through `src/lib/exec.js` (`node:child_process`), because Bun's `$` has no kill API and a `Promise.race` timeout would leave the child running |
-| `context.ask` (destructive-command confirmation) | **no equivalent** — see the confirmation-gating decision below |
+| `context.ask` (destructive-command confirmation) | `ctx.permission.assert(...)` from the setup context on 2.0.29+; policy evaluation, not unconditional confirmation |
 | `client.app.log` | **no equivalent** (`Context.app` has no `log` method) — logs go straight to `process.stderr.write` |
 
 ### The confirmation-gating decision
@@ -67,15 +107,11 @@ OQ1-HASCONFIRM: false
 OQ1-HASDIR: false
 ```
 
-No `ask`, `permission`, `confirm`, or `directory` field is reachable from a V2 tool's
-`execute()`. Since no per-call confirmation exists on V2, `src/core.js`'s `executeOpenspecCli` runs
-destructive verbs (`archive`, `new change`, `store remove`) when its injected `confirm`
-capability is `null` (which `plugin.v2.js` always passes). Earlier revisions refused them with
-`{cancelled: true, reason: "confirmation-unavailable"}` and redirected the agent to the bash
-tool; that refusal was removed in `full-cli-support` because it forced agents to shell out for
-the core change lifecycle. The residual risk (an agent steered by untrusted text runs a
-destructive command unprompted) is documented in the README's security note. V1 behaviour is
-unchanged: `context.ask` before spawning.
+No `ask`, `permission`, `confirm`, or `directory` field is present on that V2 tool context.
+This does **not** establish absence of assertion on the setup context. On 2.0.29+, the
+plugin uses the native permission domain as described above. Missing native assertion
+refuses mutations rather than running them directly or redirecting through a shell.
+V1 continues to use `context.ask` before its destructive operations.
 
 ### The `session.created` correction (found during live verification)
 
@@ -89,8 +125,7 @@ stream go straight from setup/catalog events (`agent.updated`, `catalog.updated`
 `command.updated`, `mcp.status.changed`, …) to `session.inbox.enqueued` →
 `session.execution.started` → … → `session.execution.succeeded` — **`session.created` never
 appeared.** The type surface was real but did not guarantee emission for this invocation shape;
-this matches the standing lesson (`reality/opencode-v2-sandbox-plugin-compat`) that V2's event
-vocabulary requires empirical testing, not just type-surface reading.
+V2 event emission requires empirical verification, not just type-surface reading.
 
 **Fix:** `plugin.v2.js` now populates the cache **eagerly at `setup()`**, using
 `ctx.location.directory` (already known and stable at setup time — and, per the OQ-1 finding
@@ -117,16 +152,16 @@ zero `session.created` events observed anywhere in that run's log.
 
 ## Test suite
 
-77 tests passing across 4 suites: 38 `test/plugin.test.js` + 17 `test/helpers.test.js`
-(pre-existing V1 tests, behavior unchanged), 13 V2-specific lifecycle tests
-(`test/plugin.v2.test.js`), and 9 shared adapter-conformance tests
-(`test/adapter-conformance.test.js`) asserting both entrypoints issue identical CLI
-invocations and produce identical results, except that only V1 asks for confirmation
-before a destructive verb.
+Run `npm test` for the current suite. Permission-intent, CLI-pipeline, V2-adapter, and
+adapter-conformance tests cover the audited grammar, distinct mutation actions, immutable
+invocation binding, pending approval, rejection identity, compatibility refusals, and V1
+preservation. Shared read-only results, context injection, and cleanup remain equivalent;
+V2 intentionally differs in accepted grammar and native mutation authorization.
 
 ## Addendum (2026-09-17): confirmation-gating design re-confirmed; two related ideas assessed
 
-> Superseded in part by `full-cli-support`: the "refuse and redirect" design below was replaced by running destructive verbs on V2. The `options.permission` finding (deny-only, snapshot-time visibility filter) still holds.
+> Historical v2.0.6 assessment. The absence-of-assertion conclusion is superseded by the
+> tagged v2.0.29 API above. `options.permission` remains a catalogue filter, not per-call authorization.
 
 A later, independent architectural-suitability review re-examined this plugin's V2 design
 against opencode V2's real native capabilities — specifically, whether the open follow-up
@@ -144,12 +179,10 @@ tag `v2.0.6`, `packages/core/src/tool.ts`):
 > specific invocation with a confirmation prompt, and `ctx.permission.rules(...)` does not
 > exist on the real plugin-facing `PermissionDomain` type at all.
 
-**Conclusion: KEEP AS-IS.** The existing confirmation-gating design (refuse destructive
-`openspec_cli` verbs outright and redirect the user to the built-in bash tool, which does
-prompt) stands unchanged. No code change to `src/core.js`, `src/plugin.v2.js`, or
-`src/plugin.v1.js` was made or is warranted. One-line technical reason: permission gating is a
-deny-only, snapshot-time tool-visibility filter, not a per-call confirmation ("ask") mechanism
-— there is no native V2 substitute for `context.ask` to swap in.
+**Conclusion at v2.0.6:** descriptor permissions were insufficient for per-call gating.
+The descriptor finding still applies, but it does not limit the assertion API introduced
+in v2.0.29. The plugin now gates mutations with that native API, without a V1-style prompt
+fallback or broad shell authorization.
 
 This closes the open follow-up recorded above under "The confirmation-gating decision"; no
 further re-verification of `options.permission` is pending.
