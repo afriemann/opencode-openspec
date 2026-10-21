@@ -27,7 +27,7 @@ at runtime by the plugin itself.
 
 - **WHEN** opencode V2 loads the plugin via `.opencode/plugins/` auto-discovery or an explicit `plugins` config entry
 - **THEN** the plugin's `setup` function is called with the V2 context
-- **AND** it registers the tool, event-subscription, and system-prompt capabilities without throwing, returning a cleanup function
+- **AND** it registers the tool, event-subscription, system-prompt, and bundled on-demand skill capabilities without throwing, returning a cleanup function
 
 #### Scenario: Plugin loads without runtime dependencies
 
@@ -90,3 +90,56 @@ every such handle and release all of them when the plugin is unloaded or its cle
 - **WHEN** the plugin's cleanup is invoked
 - **THEN** every previously registered capability handle is disposed
 - **AND** no further events are delivered to the plugin after cleanup completes
+
+### Requirement: V2 provides the packaged OpenSpec skill on demand
+
+The V2 plugin SHALL expose the bundled `openspec` skill through the native skill registry with metadata from its frontmatter, its absolute packaged file path, and its Markdown body as content, without injecting that body unconditionally into session context.
+
+#### Scenario: Packaged skill is available independently of the project directory
+
+- **GIVEN** the package contains `skills/openspec/SKILL.md`
+- **WHEN** the V2 plugin loads for a project outside the package directory
+- **THEN** the native registry exposes ID and name `openspec`, the packaged description, its absolute file path, and content excluding frontmatter
+- **AND** the bundled body is not appended to session context
+
+#### Scenario: Skill transform replay retains the packaged skill
+
+- **WHEN** the host replays the plugin's skill registration against a fresh registry
+- **THEN** the same packaged skill is available without duplicate entries
+
+### Requirement: Other OpenSpec skill definitions take precedence
+
+The V2 plugin SHALL preserve an existing skill with ID `openspec` and allow a subsequently discovered skill with that ID to replace its bundled definition.
+
+#### Scenario: An earlier OpenSpec skill is preserved
+
+- **GIVEN** the registry already contains a skill with ID `openspec`
+- **WHEN** the plugin's skill registration is applied
+- **THEN** the existing skill is unchanged and no replacement is added
+
+#### Scenario: A later discovered OpenSpec skill overrides the bundle
+
+- **GIVEN** the plugin has registered its bundled skill
+- **WHEN** the host applies a subsequently discovered skill with ID `openspec`
+- **THEN** that discovered skill is the active definition
+- **AND** unloading the plugin leaves the discovered skill intact
+
+### Requirement: Bundled skill failures are isolated
+
+The V2 plugin SHALL log and skip unavailable bundled-skill registration without disabling its existing tools, event handling, or session-context hook.
+
+#### Scenario: Missing native skill capability preserves existing capabilities
+
+- **WHEN** the V2 host does not expose native skill registration
+- **THEN** the plugin logs the unavailable capability and still loads its existing capabilities
+
+#### Scenario: Unreadable or malformed bundled skill preserves existing capabilities
+
+- **WHEN** the packaged skill cannot be read or has unsupported metadata or an empty body
+- **THEN** the plugin logs the skill-loading failure, exposes no bundled skill, and still loads its existing capabilities
+
+#### Scenario: Skill registration failure preserves existing capabilities
+
+- **WHEN** the native skill registration or a replayed registry edit fails
+- **THEN** the plugin logs the failure without propagating it into the host
+- **AND** its existing capabilities remain available
