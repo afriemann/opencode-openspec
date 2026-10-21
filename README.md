@@ -176,17 +176,23 @@ ln -s ~/git/opencode-openspec/src/plugin.v1.js \
 
 ### V2 (`@opencode/plugin`)
 
-V2 auto-discovers plugins from a project-local `.opencode/plugins/` directory. Keep the source layout intact: `.opencode/plugins/` scans every direct `.js` child as a plugin, so shared modules must not sit alongside the entrypoint. For a plain-copied install, copy the complete source tree into a sibling directory and add a default-export wrapper:
+V2 auto-discovers plugins from a project-local `.opencode/plugins/` directory. Keep the package layout intact: `.opencode/plugins/` scans every direct `.js` child as a plugin, so shared modules must not sit alongside the entrypoint. For a plain-copied install, copy both `src/` and `skills/` into a sibling directory and add a default-export wrapper:
 
 ```bash
 mkdir -p .opencode/plugins .opencode/lib/openspec
-cp -R ~/git/opencode-openspec/src/. .opencode/lib/openspec/
+cp -R ~/git/opencode-openspec/src ~/git/opencode-openspec/skills .opencode/lib/openspec/
 cat > .opencode/plugins/openspec.js <<'JS'
-export { default } from '../lib/openspec/plugin.v2.js'
+export { default } from '../lib/openspec/src/plugin.v2.js'
 JS
 ```
 
 Restart opencode (or open a new session) for the plugin to take effect.
+
+The V2 entrypoint registers the packaged `openspec` skill natively, making it available to load on demand without a separate skill installation. Its full body is not injected into every prompt. V1 does not register the bundled skill.
+
+Other definitions with the same skill ID take precedence: an earlier registration is preserved, and a later config-discovered skill overrides the bundle. In particular, an existing local `openspec` skill shadows the packaged copy, including future bundled updates. Unloading the plugin removes only its own registration.
+
+The skill is an unchanged copy of the existing workflow. It references other skills (including `coding` and `upgrade-planning`) and agent roles that this package does not supply; install those separately if you want the complete referenced workflow. If native skill registration is unavailable or the bundled file cannot be loaded, the plugin logs the problem and keeps its tools and context hooks available.
 
 Installed vendor copies, chezmoi-rendered files, and ai-dotfiles plugin pins/host permission rules are separate integration work; this repository change does not update them.
 
