@@ -1,11 +1,20 @@
 ---
 name: openspec
-description: "Use when starting or resuming a coding task that involves implementing changes — load right before planning or implementing, not for troubleshooting or read-only investigation. Provides the complete OpenSpec workflow for this system's agents: setup/init, read-existing-specs-first, mandatory alignment-before-creating, CLI-driven artifact workflow, spec-authoring craft, design.md ownership, and the Apply/Verify/Archive sequence. Does not run openspec commands without explicit user confirmation."
+description: "Use when starting or resuming a coding task that involves implementing changes — load right before planning or implementing, not for troubleshooting or read-only investigation. Provides the complete OpenSpec workflow for this system's agents: setup/init, read-existing-specs-first, mandatory alignment-before-creating, tool-driven artifact workflow, spec-authoring craft, design.md ownership, and the Apply/Verify/Archive sequence. Does not run openspec commands without explicit user confirmation."
 ---
 
 # OpenSpec
 
 OpenSpec organises each coding change as version-controlled artifacts — proposal, design, specs, tasks. This skill defines how this system's agents plan, author, implement, and archive them.
+
+## Tool Use
+
+Perform every `openspec` operation through the plugin tools, in this order of preference:
+- `openspec_status` for change status: returns `isPlanningComplete`, `order` (always proposal → design → specs → tasks), and `raw` (full CLI JSON, including `applyRequires`).
+- `openspec_instructions` for artifact guidance: accepts only `proposal`, `design`, `specs`, `tasks`; returns `template`, `instruction`, `resolvedOutputPath`.
+- `openspec_cli` for everything else, including `instructions apply` and `instructions archive`, which have no dedicated tool. Pass the command without the `openspec` prefix, with separate option and value tokens (`--change "<name>"`, not `--change=<name>`).
+
+Fall back to raw `openspec` via bash only when these tools are absent from your toolset. A refusal (`unaudited-command`, `permission-unavailable`, a blocked verb) or a permission denial is not absence: report it to the user and never retry the command through bash. With a worktree active, `workdir` is not required.
 
 ## Setup
 
@@ -13,7 +22,7 @@ If `openspec/` is absent from the project root, offer:
 
 > "This project doesn't have OpenSpec. Would you like me to run `openspec init --tools none`? Requires Node.js ≥ 20.19.0 and `openspec` installed globally (`npm install -g @fission-ai/openspec`)."
 
-Accepted: run it, then proceed. Declined: proceed without OpenSpec — skip the change lifecycle.
+Accepted: run it via `openspec_cli`, then proceed. Declined: proceed without OpenSpec — skip the change lifecycle.
 
 ## Read Existing Specs First
 
@@ -69,21 +78,21 @@ A change that cannot fit its cap is probably several changes; split it. Forbidde
 
 **One owner per fact** (upstream: proposal = why/what, design = how, specs = behaviour, tasks = steps): `proposal.md` owns motivation and scope, with "What Changes" naming capabilities only; `design.md` owns technical decisions and rationale, with no requirements, SHALL/MUST statements or scenarios; delta `specs/` own observable behaviour; `tasks.md` owns implementation steps, citing scenario titles for what and `design.md` decisions for how. Before `openspec validate`, check each artifact sentence against this list and delete or replace with a pointer any that states another artifact's fact.
 
-## Creating Artifacts (CLI-Driven)
+## Creating Artifacts (Tool-Driven)
 
 With confirmed scope and `openspec/` initialised:
 
-**Worktree:** if implementation will use a git worktree, create or switch to it **before** `openspec new change`; artifacts created in the main tree are invisible from a worktree. Use the `openspec_cli` tool for all `openspec` operations, never plain bash; with a worktree active, `cwd` is not required.
+**Worktree:** if implementation will use a git worktree, create or switch to it **before** `openspec_cli` `new change`; artifacts created in the main tree are invisible from a worktree.
 
-1. `openspec new change "<name>"` — scaffold the change directory.
-2. `openspec status --change "<name>" --json` — artifact dependency order, resolved paths, `applyRequires`. After all planning artifacts are written, confirm `isPlanningComplete` is `true` before implementing. Do not rely on `isComplete`: a legacy field whose meaning changed in v1.8.0.
-3. For each artifact in dependency order, `openspec instructions <id> --change "<name>" --json`; act on:
-   - `.template` — markdown starter; use as the opening structure
-   - `.instruction` — authoring guidance; apply it, do NOT copy it into the file
-   - `.resolvedOutputPath` — absolute path to write the finished file to
-4. `openspec validate <name>` — structural completeness before the approval gate.
+1. `openspec_cli` `new change "<name>"` — scaffold the change directory.
+2. `openspec_status` with `change` — read `order` and `raw` (resolved paths, `applyRequires`). After all planning artifacts are written, confirm `isPlanningComplete` is `true` before implementing.
+3. For each artifact in `order`, `openspec_instructions` with `artifact` and `change`; act on:
+   - `template` — markdown starter; use as the opening structure
+   - `instruction` — authoring guidance; apply it, do NOT copy it into the file
+   - `resolvedOutputPath` — absolute path to write the finished file to
+4. `openspec_cli` `validate <name>` — structural completeness before the approval gate.
 
-**Artifact ownership and mandatory sequence.** The order is fixed; do not follow `openspec status --json`'s order where it places `design.md` and `specs/` at the same level.
+**Artifact ownership and mandatory sequence.** The order is fixed; `design.md` precedes `specs/` even where the CLI's own status output treats them as the same level.
 
 | Step | Artifact / Action | Who | Gate |
 |---|---|---|---|
@@ -116,17 +125,16 @@ When `architect` or `ui-designer` returns, before writing `specs/`, list each de
 
 ## Apply, Sync, Verify, Archive
 
-**Apply:** call `openspec instructions apply --change "<name>" --json` for enriched guidance, then implement against `tasks.md`. Mark each task `[x]` in `tasks.md` as completed and verified; `todowrite` is no substitute, because `openspec archive` reads `tasks.md` checkboxes and warns on any unchecked item. Encode each GIVEN/WHEN/THEN scenario as a failing test (see `tdd`), named after its scenario title in the language convention: `test_<slug>` (Python); `it("<title>")` (TypeScript Jest/Vitest); `t.Run("<title>", ...)` inside a `Test<Subject>` function (Go, full name `Test<Subject>/<slug>`), or `Test<Slug>` for a standalone Go scenario with no siblings. The slugified title is the canonical scenario-to-test link the Verify step uses. Put a `// spec:` / `# spec:` comment on the outermost test container citing the main spec `openspec/specs/<domain>/spec.md` (path relative to project root; `<domain>` is the directory name under the change's `specs/`). NEVER cite `openspec/changes/...`: that path moves on archive and tests describe current behaviour, not a delivery. Move the comment to individual tests when a container mixes scenarios from different spec files. MODIFIED → update the existing test (rename if the title changed); REMOVED → delete it.
+**Apply:** call `openspec_cli` with `instructions apply --change "<name>" --json` for enriched guidance (`openspec_instructions` does not accept `apply`), then implement against `tasks.md`. Mark each task `[x]` in `tasks.md` as completed and verified; `todowrite` is no substitute, because `openspec archive` reads `tasks.md` checkboxes and warns on any unchecked item. Encode each GIVEN/WHEN/THEN scenario as a failing test (see `tdd`), named after its scenario title in the language convention: `test_<slug>` (Python); `it("<title>")` (TypeScript Jest/Vitest); `t.Run("<title>", ...)` inside a `Test<Subject>` function (Go, full name `Test<Subject>/<slug>`), or `Test<Slug>` for a standalone Go scenario with no siblings. The slugified title is the canonical scenario-to-test link the Verify step uses. Put a `// spec:` / `# spec:` comment on the outermost test container citing the main spec `openspec/specs/<domain>/spec.md` (path relative to project root; `<domain>` is the directory name under the change's `specs/`). NEVER cite `openspec/changes/...`: that path moves on archive and tests describe current behaviour, not a delivery. Move the comment to individual tests when a container mixes scenarios from different spec files. MODIFIED → update the existing test (rename if the title changed); REMOVED → delete it.
 
 **Sync:** update delta specs immediately, before continuing implementation, when (1) the user changes scope or format mid-implementation (resolve ambiguity, update the spec, then resume); (2) implementation reveals a spec gap; (3) an implementation decision diverges from the spec. The spec is the source of truth. Pre-archive, confirm the delta matches what was built and correct any drift before `openspec archive`.
 
 **Verify:** `code-reviewer` reads `proposal.md` → delta `specs/` → diff and checks completeness (every requirement implemented, every scenario covered by a test whose name matches the slugified title), correctness (implementation matches spec intent), and coherence (`design.md` decisions reflected in code). A scenario with no name-matched test is a coverage gap that blocks the review. In reverse, a test in the touched files whose name maps to a scenario title absent from every current requirement (main spec plus this change's deltas) is an orphaned test: flag `[WARNING]` for cleanup.
 
 **Archive:**
-- Use `openspec_cli`, never plain bash; with a worktree active, `cwd` is not required.
-- Before archiving, call `openspec instructions archive --change "<name>" --json`.
-- Run `openspec archive <name> --yes` (mandatory). Always pass `--yes`: the command issues two interactive prompts agents cannot answer in a non-TTY (unchecked `tasks.md` items warning; "Proceed with spec updates?" on every normal run).
-- For infrastructure, tooling, or documentation-only changes with no delta specs, use `openspec archive <name> --yes --skip-specs`. Only when the change genuinely has no delta spec files: it skips all spec updates without warning.
+- Before archiving, call `openspec_cli` with `instructions archive --change "<name>" --json`.
+- Run `openspec_cli` with `archive <name> --yes` (mandatory). Always pass `--yes`: the command issues two interactive prompts agents cannot answer in a non-TTY (unchecked `tasks.md` items warning; "Proceed with spec updates?" on every normal run). Archive is destructive: V1 asks for confirmation; V2 runs it after native permission assertion, which the host may allow, ask, or deny.
+- For infrastructure, tooling, or documentation-only changes with no delta specs, use `archive <name> --yes --skip-specs`. Only when the change genuinely has no delta spec files: it skips all spec updates without warning.
 - If the incomplete-tasks warning fires despite finished work, tick every completed `tasks.md` item `[x]` and re-run.
 - Do NOT modify the domain's main spec (`openspec/specs/<domain>/spec.md`) during implementation or before archive completes; it must stay at its pre-change state. Archive applies the delta itself; pre-editing destroys the headings the delta targets and fails with "MODIFIED failed — not found".
 - Never archive by copying or moving files by hand; use only the command, so no duplicate remains under `openspec/changes/`.
@@ -148,17 +156,17 @@ When `architect` or `ui-designer` returns, before writing `specs/`, list each de
 | `detective` | Reads `openspec/specs/` as intended behaviour alongside code investigation. |
 | `coding` | All coding-skill rules apply during Apply. OpenSpec defines *what* to build; `coding` defines *how*. |
 
-## CLI Reference
+## Tool Reference
 
-| Command | When |
-|---|---|
-| `openspec init --tools none` | First time on a project |
-| `openspec list` | On session resume, to find in-progress changes |
-| `openspec show <name>` | Inspect a change's current state |
-| `openspec new change "<name>"` | After scope alignment is confirmed |
-| `openspec status --change "<name>" --json` | After `new change`, for artifact order and paths |
-| `openspec instructions <id> --change "<name>" --json` | Per artifact, for template + constraints |
-| `openspec instructions apply --change "<name>" --json` | During implementation, for task-apply guidance |
-| `openspec instructions archive --change "<name>" --json` | Before archiving, for archive guidance |
-| `openspec validate <name>` | After artifact creation, before the approval gate |
-| `openspec archive <name> --yes` | After implementation, tests passing, review clean; add `--skip-specs` for infra/tooling/doc-only changes with no delta specs |
+| Tool | Command / arguments | When |
+|---|---|---|
+| `openspec_cli` | `init --tools none` | First time on a project |
+| `openspec_cli` | `list` | On session resume, to find in-progress changes |
+| `openspec_cli` | `show <name>` | Inspect a change's current state |
+| `openspec_cli` | `new change "<name>"` | After scope alignment is confirmed |
+| `openspec_status` | `change` | After `new change`, for artifact order and paths |
+| `openspec_instructions` | `artifact`, `change` | Per artifact, for template + constraints |
+| `openspec_cli` | `instructions apply --change "<name>" --json` | During implementation, for task-apply guidance |
+| `openspec_cli` | `instructions archive --change "<name>" --json` | Before archiving, for archive guidance |
+| `openspec_cli` | `validate <name>` | After artifact creation, before the approval gate |
+| `openspec_cli` | `archive <name> --yes` | After implementation, tests passing, review clean; add `--skip-specs` for infra/tooling/doc-only changes with no delta specs |
