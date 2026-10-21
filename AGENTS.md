@@ -7,4 +7,5 @@ opencode plugin wrapping the OpenSpec CLI as agent tools and injecting active-ch
 - Layout: `src/` plugin code (helpers in `src/lib/`: execution via `exec.js` (`node:child_process`, injected `exec` capability, not Bun `$`); `parseCommand`/`classifyCommand` in `helpers.js`), `test/` tests, `docs/v2-compat-audit.md` V1→V2 hook mapping, `openspec/` specs and changes (behaviour contract).
 - Test: `npm test` (Jest, `jest.config.js`). No lint or build script. CI: `.github/workflows/ci.yml`.
 - Gotcha: destructive `openspec_cli` verbs (`archive`, `new change`, `store remove`, `store unregister`, `workset remove`, `config reset`, `config unset`; source of truth: `classifyCommand` in `src/lib/helpers.js`) run with no prompt on V2 (no confirmation mechanism in the V2 tool context; the host can only deny the tool wholesale); on V1 they go through `context.ask`.
+- Skill: `skills/openspec/SKILL.md` ships with the plugin. Any change to tool names, parameters, behaviour, or confirmation/permission logic (`src/`) must update the skill in the same change; its tool names and behavioural claims must match the code.
 - Usage and details: see `README.md`.
