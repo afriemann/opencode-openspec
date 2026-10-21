@@ -23,7 +23,8 @@ import {
   TOOL_DESCRIPTIONS,
   V2_TOOL_OPTIONS,
 } from './core.js'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { createExec } from './lib/exec.js'
 import { permissionUnavailable } from './lib/permissions.js'
 import { join } from 'node:path'
@@ -35,6 +36,20 @@ const TOOL_NAMES = ['openspec_cli', 'openspec_status', 'openspec_instructions']
 const EAGER_CACHE_TIMEOUT_MS = 5000
 
 const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0
+
+function loadBundledSkill(readSkillFile) {
+  const path = fileURLToPath(new URL('../skills/openspec/SKILL.md', import.meta.url))
+  const source = readSkillFile(path, 'utf8')
+  // This is the packaged asset's fixed format, not a general YAML parser.
+  const match = source.match(/^---\r?\nname: ([^\r\n]+)\r?\ndescription: ("[^\r\n]*")\r?\n---\r?\n([\s\S]*)$/)
+  if (!match) throw new Error('Unsupported bundled skill frontmatter')
+  const [, name, quotedDescription, content] = match
+  const description = JSON.parse(quotedDescription)
+  if (name !== 'openspec' || !isNonEmptyString(description) || !isNonEmptyString(content)) {
+    throw new Error('Invalid bundled skill metadata or empty body')
+  }
+  return { id: name, name, description, path, content }
+}
 
 async function authorizeMutation(ctx, intent, callingContext) {
   const permission = ctx.permission
@@ -83,7 +98,7 @@ export default {
    *   session: { hook(name: string, cb: Function): Promise<{dispose(): Promise<void>}> },
    * }} ctx
    */
-  async setup(ctx, { exec = createExec() } = {}) {
+  async setup(ctx, { exec = createExec(), readSkillFile = readFileSync } = {}) {
     const log = makeLog()
 
     /** @type {Map<string, object>} */
@@ -150,6 +165,24 @@ export default {
       }
     })
 
+    let skillRegistration
+    try {
+      if (typeof ctx.skill?.transform !== 'function') {
+        log('warn', 'bundled OpenSpec skill unavailable: native skill.transform is missing')
+      } else {
+        const skill = loadBundledSkill(readSkillFile)
+        skillRegistration = await ctx.skill.transform((editor) => {
+          try {
+            if (!editor.get(skill.id)) editor.add(skill)
+          } catch (err) {
+            log('error', 'bundled OpenSpec skill transform failed', err)
+          }
+        })
+      }
+    } catch (err) {
+      log('error', 'bundled OpenSpec skill registration failed', err)
+    }
+
     // ------------------------------------------------------------------
     // Eager cache population
     // ------------------------------------------------------------------
@@ -209,6 +242,7 @@ export default {
     return async () => {
       controller.abort()
       await toolRegistration?.dispose?.()
+      await skillRegistration?.dispose?.()
       await sessionHookRegistration?.dispose?.()
     }
   },

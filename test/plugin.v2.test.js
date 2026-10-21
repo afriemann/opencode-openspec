@@ -1,13 +1,14 @@
 // test/plugin.v2.test.js
 // V2-specific lifecycle tests for src/plugin.v2.js.
-// spec: openspec/changes/v2-plugin-migration/specs/plugin/spec.md
-// spec: openspec/changes/v2-plugin-migration/specs/tools/spec.md
-// spec: openspec/changes/v2-plugin-migration/specs/system-prompt/spec.md
+// spec: openspec/specs/plugin/spec.md
+// spec: openspec/specs/tools/spec.md
+// spec: openspec/specs/system-prompt/spec.md
 
 import { jest } from '@jest/globals'
 import plugin from '../src/plugin.v2.js'
 import { createMockExec } from './support/mock-exec.js'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -72,6 +73,27 @@ function createFakeEventStream() {
   return { iterable, pushEvent, close }
 }
 
+// Verified against the native SkillEditor and ID-keyed, last-write-wins registry.
+function createFakeSkills() {
+  const transforms = new Set()
+  return {
+    transform: jest.fn(async (cb) => {
+      transforms.add(cb)
+      return { dispose: jest.fn(async () => { transforms.delete(cb) }) }
+    }),
+    replay() {
+      const skills = new Map()
+      const editor = {
+        get: (id) => skills.get(id),
+        add: jest.fn((skill) => skills.set(skill.id, skill)),
+        list: () => [...skills.values()],
+      }
+      for (const cb of transforms) cb(editor)
+      return editor
+    },
+  }
+}
+
 function createFakeCtx({ directory = '/project', eventStream, editor, toolDisposeSpy, hookDisposeSpy, permission } = {}) {
   const stream = eventStream ?? createFakeEventStream()
   const fakeEditor = editor ?? createFakeEditor()
@@ -80,6 +102,7 @@ function createFakeCtx({ directory = '/project', eventStream, editor, toolDispos
   return {
     location: { directory },
     permission,
+    skill: createFakeSkills(),
     tool: {
       async transform(cb) {
         await cb(fakeEditor)
@@ -124,7 +147,7 @@ function createTempProjectDir() {
 // ---------------------------------------------------------------------------
 
 describe('plugin.v2 setup()', () => {
-  it('registers all three tools with codemode:false', async () => {
+  it('V2 module loads and registers its capabilities', async () => {
     const mockExec = createMockExec()
     await (async () => {
       const ctx = createFakeCtx()
@@ -135,6 +158,7 @@ describe('plugin.v2 setup()', () => {
         expect(descriptor).toBeDefined()
         expect(descriptor.options).toEqual({ codemode: false })
       }
+      expect(ctx.skill.replay().get('openspec')).toBeDefined()
       await cleanup()
     })()
   })
@@ -322,16 +346,21 @@ describe('plugin.v2 event subscription', () => {
 // ---------------------------------------------------------------------------
 
 describe('plugin.v2 cleanup', () => {
-  it('disposes every registration and aborts the event controller', async () => {
+  it('Cleanup disposes every registered capability', async () => {
     const mockExec = createMockExec()
     await (async () => {
       const toolDisposeSpy = jest.fn().mockResolvedValue(undefined)
       const hookDisposeSpy = jest.fn().mockResolvedValue(undefined)
       const ctx = createFakeCtx({ toolDisposeSpy, hookDisposeSpy })
       const cleanup = await plugin.setup(ctx, { exec: mockExec })
+      expect(ctx.skill.replay().get('openspec')).toBeDefined()
       await cleanup()
       expect(toolDisposeSpy).toHaveBeenCalledTimes(1)
       expect(hookDisposeSpy).toHaveBeenCalledTimes(1)
+      expect(ctx.skill.replay().list()).toEqual([])
+      ctx._eventStream.pushEvent({ type: 'session.created', data: { sessionID: 'after-unload' } })
+      await flushMicrotasks()
+      expect(mockExec.calls).toHaveLength(0)
     })()
   })
 
@@ -343,6 +372,115 @@ describe('plugin.v2 cleanup', () => {
       await cleanup()
       await expect(cleanup()).resolves.toBeUndefined()
     })()
+  })
+})
+
+// spec: openspec/specs/plugin/spec.md
+describe('plugin.v2 bundled skill', () => {
+  const fixture = '---\nname: openspec\ndescription: "A quoted \\"workflow\\" description"\n---\n\n# Workflow\n\nUse openspec_cli.\n'
+  const options = () => ({ exec: createMockExec(), readSkillFile: jest.fn(() => fixture) })
+
+  it('Packaged skill is available independently of the project directory', async () => {
+    const ctx = createFakeCtx({ directory: '/unrelated-project' })
+    const cleanup = await plugin.setup(ctx, { exec: createMockExec() })
+    try {
+      const skill = ctx.skill.replay().get('openspec')
+      expect(skill).toBeDefined()
+      const path = fileURLToPath(new URL('../skills/openspec/SKILL.md', import.meta.url))
+      const file = readFileSync(path, 'utf8')
+      const [, name, description, body] = file.match(/^---\nname: ([^\n]+)\ndescription: ("[^\n]*")\n---\n([\s\S]*)$/)
+      expect(skill).toEqual({ id: 'openspec', name, description: JSON.parse(description), path, content: body })
+      expect(skill.content.trim()).not.toBe('')
+      const event = { sessionID: 's1', system: [] }
+      ctx._getContextHook()(event)
+      expect(event.system).toEqual([])
+    } finally { await cleanup() }
+  })
+
+  it('Skill transform replay retains the packaged skill', async () => {
+    const ctx = createFakeCtx()
+    const opts = options()
+    const cleanup = await plugin.setup(ctx, opts)
+    try {
+      const first = ctx.skill.replay().list()
+      expect(first).toHaveLength(1)
+      expect(first[0]).toMatchObject({ description: 'A quoted "workflow" description', content: '\n# Workflow\n\nUse openspec_cli.\n' })
+      expect(ctx.skill.replay().list()).toEqual(first)
+      expect(opts.readSkillFile).toHaveBeenCalledTimes(1)
+    } finally { await cleanup() }
+  })
+
+  it('An earlier OpenSpec skill is preserved', async () => {
+    const ctx = createFakeCtx()
+    const existing = { id: 'openspec', name: 'custom', content: 'Local instructions' }
+    await ctx.skill.transform((editor) => editor.add(existing))
+    const cleanup = await plugin.setup(ctx, options())
+    try {
+      expect(ctx.skill.transform).toHaveBeenCalledTimes(2)
+      const editor = ctx.skill.replay()
+      expect(editor.get('openspec')).toBe(existing)
+      expect(editor.add).toHaveBeenCalledTimes(1)
+    } finally { await cleanup() }
+  })
+
+  it('A later discovered OpenSpec skill overrides the bundle', async () => {
+    const ctx = createFakeCtx()
+    const cleanup = await plugin.setup(ctx, options())
+    expect(ctx.skill.replay().get('openspec')).toBeDefined()
+    const local = { id: 'openspec', name: 'custom', content: 'Local instructions' }
+    await ctx.skill.transform((editor) => editor.add(local))
+    expect(ctx.skill.replay().get('openspec')).toBe(local)
+    await cleanup()
+    expect(ctx.skill.replay().get('openspec')).toBe(local)
+  })
+
+  async function expectIsolatedFailure(ctx, opts, trigger = () => {}) {
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    let cleanup
+    try {
+      cleanup = await plugin.setup(ctx, opts)
+      trigger()
+      expect(stderr.mock.calls.some(([line]) => /skill/i.test(line))).toBe(true)
+      expect(ctx._fakeEditor.list()).toHaveLength(3)
+      const result = JSON.parse((await ctx._fakeEditor.get('openspec_cli').execute({ command: 'list --json' }, { sessionID: 's1' })).content)
+      expect(result.exitCode).toBe(0)
+      const event = { sessionID: 's1', system: [] }
+      expect(() => ctx._getContextHook()(event)).not.toThrow()
+      ctx._eventStream.pushEvent({ type: 'session.created', data: { sessionID: 's1' } })
+      await flushMicrotasks()
+    } finally {
+      await cleanup?.()
+      stderr.mockRestore()
+    }
+  }
+
+  it.each([undefined, {}, { transform: null }])('Missing native skill capability preserves existing capabilities: %p', async (skill) => {
+    const ctx = createFakeCtx()
+    ctx.skill = skill
+    await expectIsolatedFailure(ctx, options())
+  })
+
+  it.each([
+    ['unreadable', () => { throw new Error('ENOENT') }],
+    ['unsupported metadata', () => '---\nname: openspec\ndescription: unquoted\n---\nBody'],
+    ['wrong name', () => fixture.replace('name: openspec', 'name: other')],
+    ['empty description', () => fixture.replace(/description:.*\n/, 'description: " "\n')],
+    ['empty body', () => '---\nname: openspec\ndescription: "Workflow"\n---\n  '],
+  ])('Unreadable or malformed bundled skill preserves existing capabilities: %s', async (_label, readSkillFile) => {
+    const ctx = createFakeCtx()
+    await expectIsolatedFailure(ctx, { ...options(), readSkillFile })
+    expect(ctx.skill.replay().list()).toEqual([])
+  })
+
+  it.each(['registration', 'replay'])('Skill registration failure preserves existing capabilities: %s', async (phase) => {
+    const ctx = createFakeCtx()
+    const trigger = phase === 'registration' ? () => {} : () => {
+      const cb = ctx.skill.transform.mock.calls[0]?.[0]
+      expect(cb).toBeDefined()
+      expect(() => cb({ get: () => undefined, add: () => { throw new Error('registry failed') } })).not.toThrow()
+    }
+    if (phase === 'registration') ctx.skill.transform.mockRejectedValue(new Error('registry failed'))
+    await expectIsolatedFailure(ctx, options(), trigger)
   })
 })
 
