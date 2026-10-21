@@ -192,7 +192,7 @@ The V2 entrypoint registers the packaged `openspec` skill natively, making it av
 
 Other definitions with the same skill ID take precedence: an earlier registration is preserved, and a later config-discovered skill overrides the bundle. In particular, an existing local `openspec` skill shadows the packaged copy, including future bundled updates. Unloading the plugin removes only its own registration.
 
-The skill is the existing workflow adapted for the plugin tools. It references other skills (including `coding` and `upgrade-planning`) and agent roles that this package does not supply; install those separately if you want the complete referenced workflow. If native skill registration is unavailable or the bundled file cannot be loaded, the plugin logs the problem and keeps its tools and context hooks available.
+The skill is self-contained: it covers the OpenSpec workflow and the plugin tools, and depends on no other skill or agent role. If native skill registration is unavailable or the bundled file cannot be loaded, the plugin logs the problem and keeps its tools and context hooks available.
 
 Installed vendor copies, chezmoi-rendered files, and ai-dotfiles plugin pins/host permission rules are separate integration work; this repository change does not update them.
 
