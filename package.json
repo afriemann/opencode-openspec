@@ -16,7 +16,7 @@
     "test": "node --experimental-vm-modules node_modules/.bin/jest"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.15.0",
+    "@opencode-ai/plugin": ">=1.19.3",
     "@opencode/plugin": ">=2.0.29"
   },
   "peerDependenciesMeta": {
@@ -28,7 +28,7 @@
     }
   },
   "devDependencies": {
-    "@opencode-ai/plugin": ">=1.15.0",
+    "@opencode-ai/plugin": ">=1.19.3",
     "@opencode/plugin": "2.0.29",
     "jest": "^30.0.0"
   }
