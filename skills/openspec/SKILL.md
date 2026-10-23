@@ -7,6 +7,8 @@ description: "Use when planning or implementing a change with OpenSpec, or when 
 
 OpenSpec organises each change as version-controlled artifacts in `openspec/changes/<name>/`: proposal, design, delta specs and tasks. Archiving merges the delta specs into the main specs in `openspec/specs/`.
 
+**Specs describe application behaviour only:** what the shipped system observably does for its users or callers. Never spec test behaviour (test coverage, test cases, fixtures), documentation, configuration, tooling, CI, or refactoring. Those belong in `tasks.md` (and `design.md` for rationale), never in a requirement or scenario.
+
 ## Tool Use
 
 Perform every `openspec` operation through the plugin tools, in this order of preference:
@@ -43,7 +45,7 @@ If `openspec/specs/<domain>/` is absent, do not create the delta change yet:
    - `resolvedOutputPath`: absolute path to write the finished file to
 4. `openspec_cli` `validate <name>` checks structural completeness.
 
-A change that alters no behaviour (refactor, tooling, documentation) has no delta specs: set `skip_specs: true` in its `.openspec.yaml` (alongside its `schema:` line), since `openspec validate` rejects a change with zero deltas otherwise.
+A change that alters no application behaviour (refactor, tooling, configuration, tests, documentation) has no delta specs: set `skip_specs: true` in its `.openspec.yaml` (alongside its `schema:` line), since `openspec validate` rejects a change with zero deltas otherwise.
 
 Artifact roles: `proposal.md` records why and what; `design.md` records technical decisions and rationale, not requirements or scenarios; delta `specs/` record observable behaviour; `tasks.md` records implementation steps. State each fact in one artifact and point to it from the others.
 
@@ -54,6 +56,7 @@ Artifact roles: `proposal.md` records why and what; `design.md` records technica
 - **Scenarios are nested inside their parent requirement block.** Each `### Requirement:` contains its own `#### Scenario:` sub-headings. Never create a separate `## ADDED Scenarios` section; the validator reports `ADDED "<requirement name>" must include at least one scenario`.
 - **`SHALL`/`MUST` in the first sentence.** The validator scans only the first sentence of each requirement: write "Subject SHALL/MUST verb (condition)", not "Condition, subject SHALL verb." A keyword pushed past the first sentence is silently undetected.
 - **One statement, one `SHALL`/`MUST`.** Three "and also" clauses = three requirements.
+- **Application behaviour only.** No requirement such as "SHALL have tests for X" or "SHALL document Y", "SHALL be configured with Z"; scenarios describe system behaviour, not how it is tested.
 - **Observable only.** "SHALL show an error banner when upload exceeds 10 MB", not "SHALL handle large uploads gracefully".
 - **RFC 2119 discipline.** `MUST`/`SHALL` by default; `SHOULD` only for "unless justified"; `MAY` for genuinely optional behaviour.
 - **Name the case in the scenario title.** "Rejects an expired token", not "Test 2".
