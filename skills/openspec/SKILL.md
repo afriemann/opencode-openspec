@@ -49,6 +49,8 @@ A change that alters no application behaviour (refactor, tooling, configuration,
 
 Artifact roles: `proposal.md` records why and what; `design.md` records technical decisions and rationale, not requirements or scenarios; delta `specs/` record observable behaviour; `tasks.md` records implementation steps. State each fact in one artifact and point to it from the others.
 
+**Repository scope:** every artifact covers only this repository. Requirements describe behaviour this repository implements; tasks assign implementation and verification work inside this repository only (a task is in scope only if its edits and checks land in this repository's files). Never write a requirement or task whose work happens in another repository. Mention an external repository, service or dependency only where the change needs it as context (interface contract, version constraint, prerequisite, explicit out-of-scope boundary), stated as fact, not as work to do. Report actionable external work to the user in conversation, not in artifacts.
+
 ## Writing Good Specs
 
 - **Delta specs MUST be in subdirectory format:** `specs/<capability>/spec.md` inside the change directory (e.g. `specs/dispatcher/spec.md`). A flat `specs/<capability>.md` makes `openspec validate` report "No deltas found" even with valid headers.
