@@ -7,7 +7,7 @@ description: "Use when planning or implementing a change with OpenSpec, or when 
 
 OpenSpec organises each change as version-controlled artifacts in `openspec/changes/<name>/`: proposal, design, delta specs and tasks. Archiving merges the delta specs into the main specs in `openspec/specs/`.
 
-**Specs describe application behaviour only:** what the shipped system observably does for its users or callers. Never spec test behaviour (test coverage, test cases, fixtures), documentation, configuration, tooling, CI, or refactoring. Those belong in `tasks.md` (and `design.md` for rationale), never in a requirement or scenario.
+**Specs describe application behaviour only:** what the shipped system observably does for its users or callers. Never spec test behaviour (test coverage, test cases, fixtures), documentation, configuration, tooling, CI, refactoring, or internal log output (statements, messages, levels, fields), unless the log is an explicit audit event; an audit event is behaviour and is spec'd. Those belong in `tasks.md` (and `design.md` for rationale), never in a requirement or scenario.
 
 ## Tool Use
 
